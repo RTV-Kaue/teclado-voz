@@ -1,0 +1,65 @@
+name: Compilar IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Escolher o Xcode mais recente
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          echo "Usando $XC"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Instalar ferramentas
+        run: brew install xcodegen ldid
+
+      - name: Gerar projeto
+        run: xcodegen generate
+
+      - name: Compilar
+        run: |
+          set -o pipefail
+          xcodebuild -project TecladoVoz.xcodeproj -target TecladoVoz \
+            -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tee build.log | grep -E "error|warning: unable|BUILD" || true
+          test -d build/Release-iphoneos/TecladoVoz.app
+
+      - name: Gravar permissões (entitlements) e empacotar
+        run: |
+          APP=build/Release-iphoneos/TecladoVoz.app
+          ldid -SKeyboard/Teclado.entitlements "$APP/PlugIns/Teclado.appex/Teclado"
+          ldid -SApp/TecladoVoz.entitlements "$APP/TecladoVoz"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry TecladoVoz.ipa Payload
+          ls -la TecladoVoz.ipa
+
+      - name: Log de compilação (se der erro)
+        if: failure()
+        run: grep -n -B2 -A6 "error:" build.log | head -200 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TecladoVoz-ipa
+          path: TecladoVoz.ipa
+
+      - name: Publicar na página de Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Teclado Voz (build ${{ github.run_number }})
+          files: TecladoVoz.ipa
+          make_latest: true
