@@ -13,6 +13,9 @@ final class DictationEngine: ObservableObject {
     @Published private(set) var lastResult = ""
     @Published private(set) var status = "Sessão inativa"
     @Published private(set) var onDeviceAvailable = false
+    @Published private(set) var engineInfo = "verificando…"
+    @Published private(set) var lastEngine = "—"
+    @Published private(set) var lastPunctuation = "—"
 
     private let audioEngine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))
@@ -50,7 +53,10 @@ final class DictationEngine: ObservableObject {
         if #available(iOS 26.0, *) {
             Task { [weak self] in
                 let ok = await ModernDictation.prepare()
-                await MainActor.run { self?.modernReady = ok }
+                await MainActor.run {
+                    self?.modernReady = ok
+                    self?.engineInfo = ok ? "novo (iOS 26) pronto" : "novo indisponível, usando o clássico"
+                }
             }
         }
 
@@ -174,6 +180,7 @@ final class DictationEngine: ObservableObject {
 
     @available(iOS 26.0, *)
     private func startModern(gen: Int) {
+        lastEngine = "novo (iOS 26)"
         let m = ModernDictation()
         m.onPartial = { [weak self] text in
             guard let self, gen == self.generation, !self.delivered else { return }
@@ -201,6 +208,7 @@ final class DictationEngine: ObservableObject {
                     guard let self, gen == self.generation, self.recording else { return }
                     self.modern = nil
                     self.startLegacy(gen: gen)
+                    self.lastEngine = "clássico (o novo falhou: \(error.localizedDescription))"
                 }
             }
         }
@@ -214,6 +222,7 @@ final class DictationEngine: ObservableObject {
             return
         }
         task?.cancel()
+        if !lastEngine.hasPrefix("clássico (o novo") { lastEngine = "clássico" }
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.addsPunctuation = true
@@ -281,7 +290,26 @@ final class DictationEngine: ObservableObject {
         recording = false
         request = nil
         task = nil
+        feed = nil
+        let gen = generation
         let text = TextProcessor.process(raw, settings: settings)
+        if settings.aiPunctuation && Punctuator.aiAvailable && !Punctuator.hasPunctuation(text) {
+            publish(status: "Pontuando…")
+            Task { [weak self] in
+                let ai = await Punctuator.punctuateWithAI(text)
+                await MainActor.run {
+                    guard let self, gen == self.generation else { return }
+                    self.lastPunctuation = ai != nil ? "IA do iPhone" : "regras simples (IA não respondeu)"
+                    self.finishDelivery(ai ?? Punctuator.heuristic(text))
+                }
+            }
+        } else {
+            lastPunctuation = Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples"
+            finishDelivery(Punctuator.heuristic(text))
+        }
+    }
+
+    private func finishDelivery(_ text: String) {
         lastResult = text
         partial = ""
         lastActivity = Date()

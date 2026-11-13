@@ -1,6 +1,6 @@
 import UIKit
 
-enum KeyboardLayer { case letters, numbers, symbols }
+enum KeyboardLayer { case letters, numbers, symbols, emoji }
 
 enum KeyKind: Equatable {
     case char(String)
@@ -120,7 +120,8 @@ final class KeysContainer: UIView {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         for v in passthrough where !v.isHidden && v.window != nil {
-            if v.bounds.contains(convert(point, to: v)) { return v }
+            let p = convert(point, to: v)
+            if v.bounds.contains(p) { return v.hitTest(p, with: event) ?? v }
         }
         return bounds.contains(point) ? self : nil
     }

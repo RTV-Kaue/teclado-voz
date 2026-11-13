@@ -86,6 +86,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     private var lastSwipe: (word: String, alternates: [String])?
     private var pendingSwipeSpace = false
     private var isVisible = false
+    private var emojiPanel: EmojiPanel?
 
     // MARK: Ciclo de vida
 
@@ -570,12 +571,19 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
     private func rebuildKeys() {
         rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        emojiPanel?.removeFromSuperview()
+        emojiPanel = nil
         container.keys = []
         container.passthrough = []
         letterKeys = []
         shiftKey = nil
         returnKey = nil
         rowsStack.spacing = CGFloat(settings.keySpacing) * 1.6
+
+        if currentLayer == .emoji {
+            buildEmojiLayer()
+            return
+        }
 
         var rows: [UIStackView] = []
         // Restrições entre linhas só podem ser ativadas depois que todas estão no mesmo pai
@@ -618,13 +626,16 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             pending.append(toggle.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.45))
             pending.append(del.widthAnchor.constraint(equalTo: toggle.widthAnchor))
             for k in punct.dropFirst() { pending.append(k.widthAnchor.constraint(equalTo: punct[0].widthAnchor)) }
+        case .emoji:
+            return
         }
 
         // Linha de baixo: vírgula e ponto sempre visíveis
         let switchKey = makeKey(.layer(currentLayer == .letters ? .numbers : .letters),
                                 title: currentLayer == .letters ? "123" : "ABC", special: true)
         let comma = charKey(",")
-        let space = makeKey(.space, title: "espaço", special: false)
+        let emojiKey = makeKey(.layer(.emoji), symbol: "face.smiling", special: true)
+        let space = makeKey(.space, title: "", special: false)
         let period = charKey(".")
         let ret = makeKey(.ret, symbol: "return.left", special: true)
         returnKey = ret
@@ -636,10 +647,11 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             bottom.append(globe)
             pending.append(globe.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.1))
         }
-        bottom += [comma, space, period, ret]
+        bottom += [emojiKey, comma, space, period, ret]
         rows.append(makeRow(bottom, equal: false))
 
         pending.append(switchKey.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.3))
+        pending.append(emojiKey.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.1))
         pending.append(comma.widthAnchor.constraint(equalTo: unit.widthAnchor))
         pending.append(period.widthAnchor.constraint(equalTo: unit.widthAnchor))
         pending.append(ret.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.9))
@@ -648,6 +660,45 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         NSLayoutConstraint.activate(pending)
         updateShiftUI()
         updateReturnKey()
+    }
+
+    private func buildEmojiLayer() {
+        letterKeys = []
+        shiftKey = nil
+        returnKey = nil
+        let fillers = (0..<3).map { _ in UIView() }
+        let abc = makeKey(.layer(.letters), title: "ABC", special: true)
+        let space = makeKey(.space, title: "", special: false)
+        let del = makeKey(.delete, symbol: "delete.left", special: true)
+        let bottom = makeRow([abc, space, del], equal: false)
+        (fillers + [bottom]).forEach { rowsStack.addArrangedSubview($0) }
+
+        let recents = Shared.defaults?.stringArray(forKey: "emoji.recent") ?? []
+        let panel = EmojiPanel(recents: recents)
+        panel.onPick = { [weak self] e in self?.insertEmoji(e) }
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(panel)
+        container.passthrough.append(panel)
+        NSLayoutConstraint.activate([
+            abc.widthAnchor.constraint(equalTo: rowsStack.widthAnchor, multiplier: 0.2),
+            del.widthAnchor.constraint(equalTo: abc.widthAnchor),
+            panel.topAnchor.constraint(equalTo: rowsStack.topAnchor),
+            panel.leadingAnchor.constraint(equalTo: rowsStack.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: rowsStack.trailingAnchor),
+            panel.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -4)
+        ])
+        emojiPanel = panel
+    }
+
+    private func insertEmoji(_ e: String) {
+        feedback(.char(e))
+        textDocumentProxy.insertText(e)
+        clearWordState()
+        guard let d = Shared.defaults else { return }
+        var rec = d.stringArray(forKey: "emoji.recent") ?? []
+        rec.removeAll { $0 == e }
+        rec.insert(e, at: 0)
+        d.set(Array(rec.prefix(32)), forKey: "emoji.recent")
     }
 
     private func updateReturnKey() {
@@ -861,7 +912,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             lastSpaceTap = now
             if let fix { lastCorrection = (fix.0, fix.1, " ") } else { lastCorrection = nil }
         }
-        if currentLayer != .letters {
+        if currentLayer == .numbers || currentLayer == .symbols {
             currentLayer = .letters
             rebuildKeys()
         }

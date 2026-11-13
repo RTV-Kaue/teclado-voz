@@ -17,12 +17,13 @@ struct KeyboardSettings: Codable, Equatable {
     var autocorrect: Bool = true
     var swipeTyping: Bool = true
     var modernDictation: Bool = true
+    var aiPunctuation: Bool = true
     var vocabulary: [String] = KeyboardSettings.defaultVocabulary
     var replacements: [Replacement] = KeyboardSettings.defaultReplacements
 
     enum CodingKeys: String, CodingKey {
         case keyHeight, keySpacing, fontSize, haptics, clicks, preferOffline,
-             sessionMinutes, autocorrect, swipeTyping, modernDictation, vocabulary, replacements
+             sessionMinutes, autocorrect, swipeTyping, modernDictation, aiPunctuation, vocabulary, replacements
     }
 
     init() {}
@@ -41,6 +42,7 @@ struct KeyboardSettings: Codable, Equatable {
         autocorrect = try c.decodeIfPresent(Bool.self, forKey: .autocorrect) ?? d.autocorrect
         swipeTyping = try c.decodeIfPresent(Bool.self, forKey: .swipeTyping) ?? d.swipeTyping
         modernDictation = try c.decodeIfPresent(Bool.self, forKey: .modernDictation) ?? d.modernDictation
+        aiPunctuation = try c.decodeIfPresent(Bool.self, forKey: .aiPunctuation) ?? d.aiPunctuation
         vocabulary = try c.decodeIfPresent([String].self, forKey: .vocabulary) ?? d.vocabulary
         replacements = try c.decodeIfPresent([Replacement].self, forKey: .replacements) ?? d.replacements
     }

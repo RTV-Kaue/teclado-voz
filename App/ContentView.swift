@@ -62,6 +62,7 @@ struct ContentView: View {
 
                 Section {
                     Toggle("Motor novo com pontuação (iOS 26)", isOn: $settings.modernDictation)
+                    Toggle("Pontuar com a IA do iPhone", isOn: $settings.aiPunctuation)
                     Toggle("Preferir reconhecimento offline", isOn: $settings.preferOffline)
                     sliderRow("Sessão fica ativa por", value: $settings.sessionMinutes, range: 1...60, unit: "min")
                 } header: {
@@ -107,6 +108,10 @@ struct ContentView: View {
 
                 Section("Diagnóstico") {
                     LabeledContent("Grupo de app", value: Shared.appGroupID ?? "NÃO ENCONTRADO ⚠️")
+                    LabeledContent("Motor de ditado", value: engine.engineInfo)
+                    LabeledContent("Último ditado usou", value: engine.lastEngine)
+                    LabeledContent("Pontuação do último", value: engine.lastPunctuation)
+                    LabeledContent("IA do iPhone", value: Punctuator.aiStatus)
                     LabeledContent("Versão", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
                 }
             }
