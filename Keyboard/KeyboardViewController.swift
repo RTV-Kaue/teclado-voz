@@ -13,6 +13,19 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         var cursorMoved = false
         var longTimer: Timer?
         var popupIndex: Int?
+        // deslizar
+        var swiping = false
+        var points: [CGPoint] = []
+        var seq: [Character] = []
+        var seqIdx: [Int] = []
+    }
+
+    private struct Suggestion {
+        let title: String
+        let insert: String
+        let deleteCount: Int
+        let learn: String?
+        let highlight: Bool
     }
 
     static let accents: [String: [String]] = [
@@ -30,19 +43,24 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     ]
 
     private var settings = KeyboardSettings.load()
+    private let engine = WordEngine.shared
     private var currentLayer: KeyboardLayer = .letters
     private var shift: ShiftState = .off
     private var lastShiftTap = Date.distantPast
     private var lastSpaceTap = Date.distantPast
     private var heightConstraint: NSLayoutConstraint?
-    private let topBarHeight: CGFloat = 46
+    private let topBarHeight: CGFloat = 38
 
     private let topBar = UIView()
     private let statusLabel = UILabel()
+    private let suggestionStack = UIStackView()
+    private var suggestionButtons: [UIButton] = []
+    private var suggestions: [Suggestion] = []
     private let micButton = UIButton(type: .system)
     private let dismissButton = UIButton(type: .system)
     private let container = KeysContainer()
     private let rowsStack = UIStackView()
+    private let trail = CAShapeLayer()
 
     private var letterKeys: [KeyView] = []
     private var shiftKey: KeyView?
@@ -59,8 +77,15 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     private var pollTimer: Timer?
     private var waitingResult = false
     private var waitingSince = Date.distantPast
+    private var lastStatusKey = ""
     private let observer = DarwinObserver()
     private let haptic = UIImpactFeedbackGenerator(style: .light)
+
+    // correção e deslizar
+    private var lastCorrection: (original: String, corrected: String, sep: String)?
+    private var lastSwipe: (word: String, alternates: [String])?
+    private var pendingSwipeSpace = false
+    private var isVisible = false
 
     // MARK: Ciclo de vida
 
@@ -75,6 +100,13 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         rowsStack.distribution = .fillEqually
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(rowsStack)
+
+        trail.strokeColor = UIColor.systemBlue.withAlphaComponent(0.55).cgColor
+        trail.fillColor = nil
+        trail.lineWidth = 7
+        trail.lineCap = .round
+        trail.lineJoin = .round
+        container.layer.addSublayer(trail)
 
         NSLayoutConstraint.activate([
             topBar.topAnchor.constraint(equalTo: view.topAnchor),
@@ -93,25 +125,43 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
         observer.observe(DarwinNote.state) { [weak self] in self?.refreshStatus() }
         observer.observe(DarwinNote.result) { [weak self] in self?.insertResultIfNew() }
+        observer.observe(DarwinNote.settings) { [weak self] in self?.settingsChanged() }
+
+        loadDictionary()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        isVisible = true
         settings = KeyboardSettings.load()
         rebuildKeys()
         updateHeight()
         autoCap()
         haptic.prepare()
         insertResultIfNew()
+        lastStatusKey = ""
         refreshStatus()
+        updateSuggestions()
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // O sistema atrasa toques perto das bordas da tela; isso deixa o teclado "engasgado"
+        view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+        var v: UIView? = view.superview
+        while let s = v {
+            s.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+            v = s.superview
+        }
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        isVisible = false
         pollTimer?.invalidate()
         pollTimer = nil
         stopDeleteRepeat()
@@ -122,9 +172,25 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         super.textDidChange(textInput)
         autoCap()
         updateReturnKey()
+        updateSuggestions()
     }
 
-    // MARK: Barra superior (microfone)
+    private func settingsChanged() {
+        settings = KeyboardSettings.load()
+        rebuildKeys()
+        updateHeight()
+        loadDictionary()
+        updateSuggestions()
+    }
+
+    private func loadDictionary() {
+        let learned = Shared.defaults?.stringArray(forKey: K.learned) ?? []
+        engine.load(extra: settings.vocabulary, learned: learned) { [weak self] in
+            self?.updateSuggestions()
+        }
+    }
+
+    // MARK: Barra superior (microfone e sugestões)
 
     private func setupTopBar() {
         topBar.translatesAutoresizingMaskIntoConstraints = false
@@ -139,28 +205,48 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         statusLabel.lineBreakMode = .byTruncatingHead
         statusLabel.numberOfLines = 1
 
+        suggestionStack.axis = .horizontal
+        suggestionStack.distribution = .fillEqually
+        suggestionStack.spacing = 4
+        suggestionStack.isHidden = true
+        for i in 0..<3 {
+            let b = UIButton(type: .system)
+            b.tag = i
+            b.titleLabel?.font = .systemFont(ofSize: 17)
+            b.titleLabel?.lineBreakMode = .byTruncatingTail
+            b.setTitleColor(.label, for: .normal)
+            b.layer.cornerRadius = 8
+            b.addTarget(self, action: #selector(suggestionTapped(_:)), for: .touchUpInside)
+            suggestionButtons.append(b)
+            suggestionStack.addArrangedSubview(b)
+        }
+
         var cfg = UIButton.Configuration.filled()
         cfg.cornerStyle = .capsule
         cfg.image = UIImage(systemName: "mic.fill")
         micButton.configuration = cfg
         micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
-        for v in [dismissButton, statusLabel, micButton] as [UIView] {
+        for v in [dismissButton, statusLabel, suggestionStack, micButton] as [UIView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             topBar.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            dismissButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 6),
+            dismissButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
             dismissButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            dismissButton.widthAnchor.constraint(equalToConstant: 40),
-            dismissButton.heightAnchor.constraint(equalToConstant: 36),
+            dismissButton.widthAnchor.constraint(equalToConstant: 34),
+            dismissButton.heightAnchor.constraint(equalToConstant: 30),
             statusLabel.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 4),
             statusLabel.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -8),
             statusLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            suggestionStack.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 2),
+            suggestionStack.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
+            suggestionStack.topAnchor.constraint(equalTo: topBar.topAnchor, constant: 3),
+            suggestionStack.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -3),
             micButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -8),
             micButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            micButton.widthAnchor.constraint(equalToConstant: 84),
-            micButton.heightAnchor.constraint(equalToConstant: 36)
+            micButton.widthAnchor.constraint(equalToConstant: 58),
+            micButton.heightAnchor.constraint(equalToConstant: 30)
         ])
     }
 
@@ -169,6 +255,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     @objc private func micTapped() {
         if settings.haptics && hasFullAccess { haptic.impactOccurred() }
         guard hasFullAccess, let d = Shared.defaults else { refreshStatus(); return }
+        setSuggestions([])
         if Shared.sessionAlive {
             if d.bool(forKey: K.recording) {
                 DarwinNote.post(DarwinNote.stop)
@@ -178,64 +265,73 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
                 DarwinNote.post(DarwinNote.start)
             }
         } else if let url = URL(string: "\(Shared.urlScheme)://dictate") {
-            if openContainingApp(url) {
-                statusLabel.text = "Abrindo o app… depois toque em ◀ para voltar"
-                return
-            } else {
-                statusLabel.text = "Abra o app Teclado Voz para ativar o ditado"
-                return
-            }
+            statusLabel.text = openContainingApp(url)
+                ? "Abrindo o app… depois toque em ◀ para voltar"
+                : "Abra o app Teclado Voz para ativar o ditado"
+            return
         }
+        lastStatusKey = ""
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.refreshStatus() }
     }
 
+    private var isDictating: Bool {
+        let alive = Shared.sessionAlive
+        return waitingResult || (alive && (Shared.defaults?.bool(forKey: K.recording) ?? false))
+    }
+
     private func refreshStatus() {
-        var cfg = micButton.configuration ?? .filled()
         let d = Shared.defaults
         let alive = Shared.sessionAlive
         let recording = alive && (d?.bool(forKey: K.recording) ?? false)
-        if waitingResult && Date().timeIntervalSince(waitingSince) > 5 { waitingResult = false }
+        if waitingResult && Date().timeIntervalSince(waitingSince) > 6 { waitingResult = false }
 
-        let text: String
+        let state: String
+        var text: String
+        let image: String
+        let color: UIColor
         if !hasFullAccess {
-            text = "Ative “Permitir Acesso Total” nos Ajustes"
-            cfg.image = UIImage(systemName: "mic.slash")
-            cfg.baseBackgroundColor = .systemGray
+            state = "noaccess"; text = "Ative “Permitir Acesso Total” nos Ajustes"
+            image = "mic.slash"; color = .systemGray
         } else if d == nil {
-            text = "Erro: grupo de app não encontrado"
-            cfg.image = UIImage(systemName: "exclamationmark.triangle")
-            cfg.baseBackgroundColor = .systemGray
+            state = "nogroup"; text = "Erro: grupo de app não encontrado"
+            image = "exclamationmark.triangle"; color = .systemGray
         } else if recording {
+            state = "rec"
             let p = d?.string(forKey: K.partial) ?? ""
             text = p.isEmpty ? "Ouvindo… fale agora" : p
-            cfg.image = UIImage(systemName: "stop.fill")
-            cfg.baseBackgroundColor = .systemRed
+            image = "stop.fill"; color = .systemRed
         } else if waitingResult {
-            text = "Processando…"
-            cfg.image = UIImage(systemName: "ellipsis")
-            cfg.baseBackgroundColor = .systemOrange
+            state = "wait"; text = "Processando…"
+            image = "ellipsis"; color = .systemOrange
         } else if alive {
-            text = "Pronto: toque no microfone"
-            cfg.image = UIImage(systemName: "mic.fill")
-            cfg.baseBackgroundColor = .systemBlue
+            state = "ready"; text = ""
+            image = "mic.fill"; color = .systemBlue
         } else {
-            text = "Toque no microfone para ativar o ditado"
-            cfg.image = UIImage(systemName: "mic")
-            cfg.baseBackgroundColor = .systemGray
+            state = "off"; text = ""
+            image = "mic"; color = .systemGray
         }
-        statusLabel.text = text
+        if statusLabel.text != text { statusLabel.text = text }
+        if (state == "rec" || state == "wait") && !suggestions.isEmpty { setSuggestions([]) }
+        guard state != lastStatusKey else { return }
+        lastStatusKey = state
+        var cfg = micButton.configuration ?? .filled()
+        cfg.image = UIImage(systemName: image)
+        cfg.baseBackgroundColor = color
         micButton.configuration = cfg
     }
 
     private func insertResultIfNew() {
-        guard let d = Shared.defaults else { return }
+        // Um teclado antigo (de outro app) ainda pode estar na memória: só o visível insere
+        guard isVisible, let d = Shared.defaults else { return }
         let id = d.integer(forKey: K.resultID)
         guard id > d.integer(forKey: K.consumedID) else { return }
         d.set(id, forKey: K.consumedID)
         waitingResult = false
+        lastStatusKey = ""
         let age = Date().timeIntervalSince1970 - d.double(forKey: K.resultTime)
         guard age < 30, let raw = d.string(forKey: K.result), !raw.isEmpty else { refreshStatus(); return }
         textDocumentProxy.insertText(adjustForContext(raw))
+        clearWordState()
         autoCap()
         refreshStatus()
     }
@@ -272,7 +368,158 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             }
             responder = r.next
         }
+        // Plano B: pegar o UIApplication compartilhado por nome
+        let shared = NSSelectorFromString("sharedApplication")
+        if let cls = NSClassFromString("UIApplication") as? NSObject.Type,
+           cls.responds(to: shared),
+           let app = cls.perform(shared)?.takeUnretainedValue() as? UIApplication,
+           app.responds(to: sel) {
+            let fn = unsafeBitCast(app.method(for: sel), to: OpenFn.self)
+            fn(app, sel, url as NSURL, NSDictionary(), nil)
+            return true
+        }
         return false
+    }
+
+    // MARK: Sugestões
+
+    private func setSuggestions(_ items: [Suggestion]) {
+        suggestions = Array(items.prefix(3))
+        let show = !suggestions.isEmpty
+        suggestionStack.isHidden = !show
+        statusLabel.isHidden = show
+        for (i, b) in suggestionButtons.enumerated() {
+            if i < suggestions.count {
+                let s = suggestions[i]
+                b.isHidden = false
+                b.setTitle(s.title, for: .normal)
+                b.titleLabel?.font = s.highlight ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 17)
+                b.backgroundColor = s.highlight ? KeyView.normalColor.withAlphaComponent(0.6) : .clear
+            } else {
+                b.isHidden = true
+            }
+        }
+    }
+
+    private func updateSuggestions() {
+        guard engine.loaded, !isDictating, currentLayer == .letters || pendingSwipeSpace else {
+            setSuggestions([])
+            return
+        }
+        if pendingSwipeSpace, let s = lastSwipe {
+            let items = s.alternates.map {
+                Suggestion(title: $0, insert: $0 + " ", deleteCount: s.word.count + 1, learn: nil, highlight: false)
+            }
+            setSuggestions(items)
+            return
+        }
+        let w = currentWord()
+        guard !w.isEmpty, w.allSatisfy({ $0.isLetter }) else {
+            setSuggestions([])
+            return
+        }
+        var items: [Suggestion] = []
+        if settings.autocorrect, !isProtected(w), let c = engine.correction(for: w) {
+            let fixed = matchCase(c, like: w)
+            if fixed != w {
+                items.append(Suggestion(title: "“\(w)”", insert: w + " ", deleteCount: w.count, learn: w, highlight: false))
+                items.append(Suggestion(title: fixed, insert: fixed + " ", deleteCount: w.count, learn: nil, highlight: true))
+            }
+        }
+        for c in engine.completions(prefix: w, limit: 5) {
+            let cc = matchCase(c, like: w)
+            if cc != w && !items.contains(where: { $0.title == cc }) && items.count < 3 {
+                items.append(Suggestion(title: cc, insert: cc + " ", deleteCount: w.count, learn: nil, highlight: false))
+            }
+        }
+        setSuggestions(items)
+    }
+
+    @objc private func suggestionTapped(_ sender: UIButton) {
+        guard sender.tag < suggestions.count else { return }
+        let s = suggestions[sender.tag]
+        if settings.haptics && hasFullAccess { haptic.impactOccurred() }
+        for _ in 0..<s.deleteCount { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(s.insert)
+        if let l = s.learn { learnWord(l) }
+        let wasSwipe = pendingSwipeSpace
+        clearWordState()
+        pendingSwipeSpace = wasSwipe
+        autoCap()
+        updateSuggestions()
+    }
+
+    private func learnWord(_ w: String) {
+        engine.learn(w)
+        guard let d = Shared.defaults else { return }
+        var arr = d.stringArray(forKey: K.learned) ?? []
+        if !arr.contains(w.lowercased()) {
+            arr.append(w.lowercased())
+            d.set(Array(arr.suffix(2000)), forKey: K.learned)
+        }
+    }
+
+    private func clearWordState() {
+        lastCorrection = nil
+        lastSwipe = nil
+        pendingSwipeSpace = false
+    }
+
+    /// Palavra que está sendo digitada (antes do cursor)
+    private func currentWord() -> String {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        var chars: [Character] = []
+        for ch in before.reversed() {
+            if ch.isLetter || ch.isNumber || ch == "-" { chars.append(ch) } else { break }
+        }
+        return String(chars.reversed())
+    }
+
+    private func isProtected(_ w: String) -> Bool {
+        if w.count >= 2 && w == w.uppercased() { return true } // siglas: TC, SEL, IEC
+        let lw = w.lowercased()
+        return settings.vocabulary.contains { $0.lowercased() == lw }
+    }
+
+    private func matchCase(_ word: String, like typed: String) -> String {
+        if typed.count >= 2 && typed == typed.uppercased() { return word.uppercased() }
+        if let f = typed.first, f.isUppercase { return word.prefix(1).uppercased() + word.dropFirst() }
+        return word
+    }
+
+    /// Corrige a palavra atual antes de um espaço/pontuação. Retorna true se corrigiu.
+    private func autocorrectCurrentWord() -> (String, String)? {
+        guard settings.autocorrect, engine.loaded else { return nil }
+        let w = currentWord()
+        guard w.count >= 2, w.allSatisfy({ $0.isLetter }), !isProtected(w),
+              let c = engine.correction(for: w) else { return nil }
+        let fixed = matchCase(c, like: w)
+        guard fixed != w else { return nil }
+        for _ in 0..<w.count { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(fixed)
+        return (w, fixed)
+    }
+
+    /// Apagar logo depois de uma correção volta a palavra original (e aprende ela)
+    private func undoAutocorrect() -> Bool {
+        guard let lc = lastCorrection else { return false }
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard before.hasSuffix(lc.corrected + lc.sep) else { lastCorrection = nil; return false }
+        for _ in 0..<(lc.corrected.count + lc.sep.count) { textDocumentProxy.deleteBackward() }
+        textDocumentProxy.insertText(lc.original)
+        learnWord(lc.original)
+        lastCorrection = nil
+        return true
+    }
+
+    /// Apagar logo depois de deslizar apaga a palavra inteira
+    private func undoSwipe() -> Bool {
+        guard pendingSwipeSpace, let s = lastSwipe else { return false }
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard before.hasSuffix(s.word + " ") else { clearWordState(); return false }
+        for _ in 0..<(s.word.count + 1) { textDocumentProxy.deleteBackward() }
+        clearWordState()
+        return true
     }
 
     // MARK: Montagem das teclas
@@ -331,24 +578,27 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         rowsStack.spacing = CGFloat(settings.keySpacing) * 1.6
 
         var rows: [UIStackView] = []
-        // Restrições entre linhas diferentes só podem ser ativadas depois que
-        // todas as linhas estiverem no mesmo pai (senão o teclado trava ao abrir)
+        // Restrições entre linhas só podem ser ativadas depois que todas estão no mesmo pai
         var pending: [NSLayoutConstraint] = []
         let unit: KeyView
 
         switch currentLayer {
         case .letters:
             let r1 = "qwertyuiop".map { charKey(String($0)) }
-            let r2 = "asdfghjklç".map { charKey(String($0)) }
+            let r2 = "asdfghjkl".map { charKey(String($0)) }
             let r3 = "zxcvbnm".map { charKey(String($0)) }
             let shiftK = makeKey(.shift, symbol: "shift", special: true)
             let del = makeKey(.delete, symbol: "delete.left", special: true)
             shiftKey = shiftK
             letterKeys = r1 + r2 + r3
             unit = r1[0]
-            rows = [makeRow(r1, equal: true), makeRow(r2, equal: true),
+            // linha do meio com meia tecla de recuo dos dois lados (como no iPhone)
+            let padL = UIView(), padR = UIView()
+            rows = [makeRow(r1, equal: true),
+                    makeRow([padL] + r2 + [padR], equal: false),
                     makeRow([shiftK] + r3 + [del], equal: false)]
-            for k in r3 { pending.append(k.widthAnchor.constraint(equalTo: unit.widthAnchor)) }
+            for k in r2 + r3 { pending.append(k.widthAnchor.constraint(equalTo: unit.widthAnchor)) }
+            pending.append(padL.widthAnchor.constraint(equalTo: padR.widthAnchor))
             pending.append(shiftK.widthAnchor.constraint(equalTo: del.widthAnchor))
 
         case .numbers, .symbols:
@@ -425,8 +675,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         key.highlighted = true
 
         // Digitação rápida: confirma as teclas anteriores ainda pressionadas, mantendo a ordem
-        for (t, pending) in active where !pending.committed && pending.popupIndex == nil {
-            var a = pending
+        for (t, pendingTouch) in active where !pendingTouch.committed && pendingTouch.popupIndex == nil && !pendingTouch.swiping {
+            var a = pendingTouch
             if case .char = a.key.kind {
                 a.longTimer?.invalidate()
                 a.longTimer = nil
@@ -440,10 +690,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         var a = ActiveTouch(key: key, start: p, lastX: p.x)
         switch key.kind {
         case .delete:
-            textDocumentProxy.deleteBackward()
+            deleteTapped()
             a.committed = true
             startDeleteRepeat()
-            autoCap()
         case .shift:
             shiftTapped()
             a.committed = true
@@ -468,6 +717,31 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             active[touch] = a
             return
         }
+
+        // Começo do deslizar: saiu da tecla de letra arrastando
+        if !a.swiping, !a.committed, settings.swipeTyping, currentLayer == .letters,
+           case .char(let s) = a.key.kind, let ch = s.first, ch.isLetter,
+           hypot(p.x - a.start.x, p.y - a.start.y) > max(a.key.bounds.width * 0.75, 18) {
+            a.swiping = true
+            a.longTimer?.invalidate()
+            a.longTimer = nil
+            a.key.highlighted = false
+            a.points = [a.start]
+            a.seq = [ch]
+            a.seqIdx = [0]
+        }
+        if a.swiping {
+            a.points.append(p)
+            if let k = container.key(at: p), case .char(let s) = k.kind,
+               let ch = s.first, ch.isLetter, a.seq.last != ch {
+                a.seq.append(ch)
+            }
+            a.seqIdx.append(a.seq.count - 1)
+            drawTrail(a.points)
+            active[touch] = a
+            return
+        }
+
         // Arrastar na barra de espaço move o cursor
         if case .space = a.key.kind {
             if !a.cursorMoved && abs(p.x - a.start.x) > 14 {
@@ -491,12 +765,23 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         a.longTimer?.invalidate()
         a.key.highlighted = false
         if case .delete = a.key.kind { stopDeleteRepeat() }
+        if a.swiping {
+            clearTrail()
+            if !cancelled { finishSwipe(a) }
+            return
+        }
         if let idx = a.popupIndex {
             if !cancelled, idx < popupOptions.count { insertCharacter(popupOptions[idx], raw: true) }
             hidePopup()
             return
         }
-        if !cancelled && !a.committed { commit(a) }
+        if !a.committed {
+            if !cancelled {
+                commit(a)
+            } else if case .char = a.key.kind {
+                commit(a)   // o sistema às vezes cancela o toque; não perder a letra
+            }
+        }
     }
 
     private func commit(_ a: ActiveTouch) {
@@ -504,22 +789,45 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         case .char(let s):
             insertCharacter(s, raw: false)
         case .space:
-            if !a.cursorMoved { spaceTapped() }
+            if !a.cursorMoved { spaceTapped() } else { updateSuggestions() }
         case .ret:
-            textDocumentProxy.insertText("\n")
+            if let fix = autocorrectCurrentWord() {
+                textDocumentProxy.insertText("\n")
+                lastCorrection = (fix.0, fix.1, "\n")
+            } else {
+                textDocumentProxy.insertText("\n")
+                lastCorrection = nil
+            }
+            lastSwipe = nil
+            pendingSwipeSpace = false
             autoCap()
+            updateSuggestions()
         case .layer(let l):
             currentLayer = l
             rebuildKeys()
             autoCap()
+            updateSuggestions()
         case .shift, .delete:
             break
         }
     }
 
     private func insertCharacter(_ s: String, raw: Bool) {
+        let isPunct = [".", ",", "!", "?", ";", ":", "…"].contains(s)
+        var fix: (String, String)?
+        if isPunct {
+            let before = textDocumentProxy.documentContextBeforeInput ?? ""
+            if pendingSwipeSpace && before.hasSuffix(" ") {
+                textDocumentProxy.deleteBackward()   // "palavra ." -> "palavra."
+            } else {
+                fix = autocorrectCurrentWord()
+            }
+        }
         let text = (!raw && shift != .off && currentLayer == .letters) ? s.uppercased() : s
         textDocumentProxy.insertText(text)
+        lastSwipe = nil
+        pendingSwipeSpace = false
+        if let fix { lastCorrection = (fix.0, fix.1, text) } else { lastCorrection = nil }
         if shift == .on {
             shift = .off
             updateShiftUI()
@@ -528,26 +836,142 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             currentLayer = .letters
             rebuildKeys()
         }
+        updateSuggestions()
     }
 
     private func spaceTapped() {
+        // Depois de deslizar o espaço já foi colocado
+        if pendingSwipeSpace {
+            clearWordState()
+            updateSuggestions()
+            return
+        }
+        let fix = autocorrectCurrentWord()
         let now = Date()
         let ctx = textDocumentProxy.documentContextBeforeInput ?? ""
-        if now.timeIntervalSince(lastSpaceTap) < 0.4, ctx.hasSuffix(" "),
+        if fix == nil, now.timeIntervalSince(lastSpaceTap) < 0.4, ctx.hasSuffix(" "),
            let c = ctx.dropLast().last, c.isLetter || c.isNumber {
             // Espaço duplo vira ". "
             textDocumentProxy.deleteBackward()
             textDocumentProxy.insertText(". ")
             lastSpaceTap = .distantPast
+            lastCorrection = nil
         } else {
             textDocumentProxy.insertText(" ")
             lastSpaceTap = now
+            if let fix { lastCorrection = (fix.0, fix.1, " ") } else { lastCorrection = nil }
         }
         if currentLayer != .letters {
             currentLayer = .letters
             rebuildKeys()
         }
         autoCap()
+        updateSuggestions()
+    }
+
+    private func deleteTapped() {
+        if undoSwipe() || undoAutocorrect() {
+            autoCap()
+            updateSuggestions()
+            return
+        }
+        textDocumentProxy.deleteBackward()
+        clearWordState()
+        autoCap()
+        updateSuggestions()
+    }
+
+    // MARK: Deslizar
+
+    private func finishSwipe(_ a: ActiveTouch) {
+        guard a.seq.count >= 2 || a.points.count > 4 else {
+            commit(a)
+            return
+        }
+        let corners = detectCorners(a.points, seqIdx: a.seqIdx)
+        let cands = engine.swipeCandidates(path: a.seq, corners: corners, neighbors: neighborMap(), limit: 4)
+        guard let best = cands.first else {
+            if settings.haptics && hasFullAccess { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+            return
+        }
+        var word = best
+        var alts = Array(cands.dropFirst())
+        if shift == .locked {
+            word = word.uppercased(); alts = alts.map { $0.uppercased() }
+        } else if shift == .on {
+            word = word.prefix(1).uppercased() + word.dropFirst()
+            alts = alts.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        }
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        if let last = before.last, !last.isWhitespace, !"([{\"'“/".contains(last) {
+            textDocumentProxy.insertText(" ")
+        }
+        textDocumentProxy.insertText(word + " ")
+        lastCorrection = nil
+        lastSwipe = (word, alts)
+        pendingSwipeSpace = true
+        if shift == .on {
+            shift = .off
+            updateShiftUI()
+        }
+        updateSuggestions()
+    }
+
+    private func detectCorners(_ pts: [CGPoint], seqIdx: [Int]) -> Set<Int> {
+        var out = Set<Int>()
+        let k = 4
+        guard pts.count > 2 * k, seqIdx.count == pts.count else { return out }
+        for i in k..<(pts.count - k) {
+            let a = pts[i - k], b = pts[i], c = pts[i + k]
+            let v1x = b.x - a.x, v1y = b.y - a.y
+            let v2x = c.x - b.x, v2y = c.y - b.y
+            let l1 = hypot(v1x, v1y), l2 = hypot(v2x, v2y)
+            guard l1 > 8, l2 > 8 else { continue }
+            let cosine = (v1x * v2x + v1y * v2y) / (l1 * l2)
+            if cosine < 0.3 { out.insert(seqIdx[i]) }
+        }
+        return out
+    }
+
+    private func neighborMap() -> [Character: [Character]] {
+        var centers: [(Character, CGPoint)] = []
+        for k in letterKeys {
+            if case .char(let s) = k.kind, let ch = s.first {
+                let f = k.convert(k.bounds, to: container)
+                centers.append((ch, CGPoint(x: f.midX, y: f.midY)))
+            }
+        }
+        let gap = CGFloat(settings.keySpacing)
+        let w = (letterKeys.first?.bounds.width ?? 30) + gap
+        let h = (letterKeys.first?.bounds.height ?? 50) + gap * 1.6
+        var map: [Character: [Character]] = [:]
+        for (c, p) in centers {
+            map[c] = centers.filter { other in
+                guard other.0 != c else { return false }
+                let dx = (other.1.x - p.x) / w, dy = (other.1.y - p.y) / h
+                return dx * dx + dy * dy < 1.5 * 1.5
+            }.map { $0.0 }
+        }
+        return map
+    }
+
+    private func drawTrail(_ pts: [CGPoint]) {
+        guard let first = pts.first else { return }
+        let path = UIBezierPath()
+        path.move(to: first)
+        for p in pts.dropFirst() { path.addLine(to: p) }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trail.opacity = 1
+        trail.path = path.cgPath
+        CATransaction.commit()
+    }
+
+    private func clearTrail() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        trail.opacity = 0
+        CATransaction.commit()
     }
 
     // MARK: Shift / maiúsculas
@@ -614,11 +1038,13 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         deleteTimer?.invalidate()
         deleteTimer = nil
         autoCap()
+        updateSuggestions()
     }
 
     private func repeatDelete() {
         deleteCount += 1
         if deleteCount > 12 { deleteWord() } else { textDocumentProxy.deleteBackward() }
+        clearWordState()
     }
 
     private func deleteWord() {
@@ -640,7 +1066,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     // MARK: Acentos (segurar a tecla)
 
     private func showAlternates(for touch: UITouch) {
-        guard var a = active[touch], !a.committed, case .char(let base) = a.key.kind else { return }
+        guard var a = active[touch], !a.committed, !a.swiping, case .char(let base) = a.key.kind else { return }
         let upper = shift != .off && currentLayer == .letters
         popupOptions = ([base] + a.key.alternates).map { upper ? $0.uppercased() : $0 }
 
@@ -704,7 +1130,10 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
     private func feedback(_ kind: KeyKind) {
         guard hasFullAccess else { return }
-        if settings.haptics { haptic.impactOccurred() }
+        if settings.haptics {
+            haptic.impactOccurred()
+            haptic.prepare()
+        }
         if settings.clicks {
             let sound: SystemSoundID
             switch kind {

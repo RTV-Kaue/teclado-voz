@@ -24,6 +24,18 @@ jobs:
       - name: Instalar ferramentas
         run: brew install xcodegen ldid
 
+      - name: Baixar dicionário de português
+        run: |
+          set -e
+          for U in \
+            https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/pt_br/pt_br_50k.txt \
+            https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2016/pt_br/pt_br_50k.txt; do
+            if curl -fsSL "$U" -o Keyboard/palavras.txt; then break; fi
+          done
+          test -s Keyboard/palavras.txt
+          wc -l Keyboard/palavras.txt
+          head -5 Keyboard/palavras.txt
+
       - name: Gerar projeto
         run: xcodegen generate
 

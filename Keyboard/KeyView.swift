@@ -69,6 +69,12 @@ final class KeyView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) não usado") }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Sombra com caminho pronto: muito mais leve para desenhar
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+    }
+
     func setTitle(_ t: String) {
         label.text = t
         label.isHidden = false

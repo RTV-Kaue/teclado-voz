@@ -27,6 +27,15 @@ final class DictationEngine: ObservableObject {
     private var settings = KeyboardSettings.load()
     private let observer = DarwinObserver()
 
+    // Motor novo (iOS 26)
+    private var modern: AnyObject?
+    private var modernReady: Bool?
+    private var _feed: ((AVAudioPCMBuffer) -> Void)?
+    private var feed: ((AVAudioPCMBuffer) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _feed }
+        set { lock.lock(); _feed = newValue; lock.unlock() }
+    }
+
     private var request: SFSpeechAudioBufferRecognitionRequest? {
         get { lock.lock(); defer { lock.unlock() }; return _request }
         set { lock.lock(); _request = newValue; lock.unlock() }
@@ -38,6 +47,12 @@ final class DictationEngine: ObservableObject {
         observer.observe(DarwinNote.stop) { [weak self] in self?.stopDictation() }
         observer.observe(DarwinNote.cancel) { [weak self] in self?.cancelDictation() }
         observer.observe(DarwinNote.settings) { [weak self] in self?.settings = KeyboardSettings.load() }
+        if #available(iOS 26.0, *) {
+            Task { [weak self] in
+                let ok = await ModernDictation.prepare()
+                await MainActor.run { self?.modernReady = ok }
+            }
+        }
 
         let nc = NotificationCenter.default
         nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
@@ -109,7 +124,9 @@ final class DictationEngine: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Microfone sem permissão ou indisponível"])
         }
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.request?.append(buffer)
+            guard let self else { return }
+            self.request?.append(buffer)
+            self.feed?(buffer)
         }
         audioEngine.prepare()
         try audioEngine.start()
@@ -132,11 +149,67 @@ final class DictationEngine: ObservableObject {
 
     // MARK: Ditado
 
+    var usingModernEngine: Bool {
+        if #available(iOS 26.0, *) { return settings.modernDictation && modernReady == true }
+        return false
+    }
+
     func startDictation() {
         guard startSession() else { return }
         guard !recording else { return }
         settings = KeyboardSettings.load()
+        generation += 1
+        let gen = generation
+        delivered = false
+        partial = ""
+        recording = true
+        lastActivity = Date()
+        if #available(iOS 26.0, *), usingModernEngine {
+            publish(status: "Ouvindo…")
+            startModern(gen: gen)
+        } else {
+            startLegacy(gen: gen)
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private func startModern(gen: Int) {
+        let m = ModernDictation()
+        m.onPartial = { [weak self] text in
+            guard let self, gen == self.generation, !self.delivered else { return }
+            self.partial = text
+            Shared.defaults?.set(text, forKey: K.partial)
+            DarwinNote.post(DarwinNote.state)
+        }
+        m.onFinish = { [weak self] text in
+            guard let self, gen == self.generation, !self.delivered else { return }
+            self.feed = nil
+            self.modern = nil
+            if text.isEmpty { self.finishWithoutText() } else { self.deliver(text) }
+        }
+        modern = m
+        Task { [weak self] in
+            do {
+                try await m.start()
+                await MainActor.run {
+                    guard let self, gen == self.generation, self.recording else { return }
+                    self.feed = { [weak m] buffer in m?.append(buffer) }
+                }
+            } catch {
+                // Se o motor novo falhar, usa o clássico
+                await MainActor.run {
+                    guard let self, gen == self.generation, self.recording else { return }
+                    self.modern = nil
+                    self.startLegacy(gen: gen)
+                }
+            }
+        }
+    }
+
+    private func startLegacy(gen: Int) {
         guard let recognizer, recognizer.isAvailable else {
+            recording = false
+            delivered = true
             publish(status: "Reconhecimento de voz indisponível agora")
             return
         }
@@ -149,14 +222,7 @@ final class DictationEngine: ObservableObject {
             req.requiresOnDeviceRecognition = true
         }
         req.contextualStrings = Array(settings.vocabulary.filter { !$0.isEmpty }.prefix(100))
-
-        generation += 1
-        let gen = generation
-        delivered = false
-        partial = ""
         request = req
-        recording = true
-        lastActivity = Date()
         publish(status: "Ouvindo…")
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async { self?.handle(gen: gen, result: result, error: error) }
@@ -168,6 +234,8 @@ final class DictationEngine: ObservableObject {
         recording = false
         request?.endAudio()
         request = nil
+        feed = nil
+        if #available(iOS 26.0, *), let m = modern as? ModernDictation { m.stop() }
         publish(status: "Processando…")
         let gen = generation
         fallback?.cancel()
@@ -177,11 +245,14 @@ final class DictationEngine: ObservableObject {
             self.task?.cancel()
         }
         fallback = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     func cancelDictation() {
         generation += 1
+        feed = nil
+        if #available(iOS 26.0, *), let m = modern as? ModernDictation { m.cancel() }
+        modern = nil
         task?.cancel()
         task = nil
         request?.endAudio()

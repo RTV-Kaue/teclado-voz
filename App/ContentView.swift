@@ -50,15 +50,18 @@ struct ContentView: View {
                     sliderRow("Altura das teclas", value: $settings.keyHeight, range: 40...80, unit: "pt")
                     sliderRow("Espaço entre teclas", value: $settings.keySpacing, range: 2...12, unit: "pt")
                     sliderRow("Tamanho da letra", value: $settings.fontSize, range: 16...32, unit: "pt")
+                    Toggle("Correção automática", isOn: $settings.autocorrect)
+                    Toggle("Digitar deslizando", isOn: $settings.swipeTyping)
                     Toggle("Vibração ao tocar", isOn: $settings.haptics)
                     Toggle("Som ao tocar", isOn: $settings.clicks)
                 } header: {
                     Text("Teclado")
                 } footer: {
-                    Text("Feche e abra o teclado para ver as mudanças.")
+                    Text("As mudanças aparecem na hora no teclado.")
                 }
 
                 Section {
+                    Toggle("Motor novo com pontuação (iOS 26)", isOn: $settings.modernDictation)
                     Toggle("Preferir reconhecimento offline", isOn: $settings.preferOffline)
                     sliderRow("Sessão fica ativa por", value: $settings.sessionMinutes, range: 1...60, unit: "min")
                 } header: {
@@ -76,6 +79,15 @@ struct ContentView: View {
                     NavigationLink("Substituições (\(settings.replacements.count))") {
                         ReplacementsView(items: $settings.replacements)
                     }
+                }
+
+                Section {
+                    Button("Esquecer palavras aprendidas", role: .destructive) {
+                        Shared.defaults?.removeObject(forKey: K.learned)
+                        DarwinNote.post(DarwinNote.settings)
+                    }
+                } footer: {
+                    Text("Quando você apaga logo depois de uma correção, o teclado volta a palavra original e aprende ela.")
                 }
 
                 Section("Testar o teclado") {
