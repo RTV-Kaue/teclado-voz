@@ -331,6 +331,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         rowsStack.spacing = CGFloat(settings.keySpacing) * 1.6
 
         var rows: [UIStackView] = []
+        // Restrições entre linhas diferentes só podem ser ativadas depois que
+        // todas as linhas estiverem no mesmo pai (senão o teclado trava ao abrir)
+        var pending: [NSLayoutConstraint] = []
         let unit: KeyView
 
         switch currentLayer {
@@ -345,8 +348,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             unit = r1[0]
             rows = [makeRow(r1, equal: true), makeRow(r2, equal: true),
                     makeRow([shiftK] + r3 + [del], equal: false)]
-            for k in r3 { k.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
-            shiftK.widthAnchor.constraint(equalTo: del.widthAnchor).isActive = true
+            for k in r3 { pending.append(k.widthAnchor.constraint(equalTo: unit.widthAnchor)) }
+            pending.append(shiftK.widthAnchor.constraint(equalTo: del.widthAnchor))
 
         case .numbers, .symbols:
             let isNum = currentLayer == .numbers
@@ -362,9 +365,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             unit = r1[0]
             rows = [makeRow(r1, equal: true), makeRow(r2, equal: true),
                     makeRow([toggle] + punct + [del], equal: false)]
-            toggle.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.45).isActive = true
-            del.widthAnchor.constraint(equalTo: toggle.widthAnchor).isActive = true
-            for k in punct.dropFirst() { k.widthAnchor.constraint(equalTo: punct[0].widthAnchor).isActive = true }
+            pending.append(toggle.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.45))
+            pending.append(del.widthAnchor.constraint(equalTo: toggle.widthAnchor))
+            for k in punct.dropFirst() { pending.append(k.widthAnchor.constraint(equalTo: punct[0].widthAnchor)) }
         }
 
         // Linha de baixo: vírgula e ponto sempre visíveis
@@ -381,17 +384,18 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             let globe = makeGlobeKey()
             container.passthrough.append(globe)
             bottom.append(globe)
-            globe.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.1).isActive = true
+            pending.append(globe.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.1))
         }
         bottom += [comma, space, period, ret]
         rows.append(makeRow(bottom, equal: false))
 
-        switchKey.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.3).isActive = true
-        comma.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true
-        period.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true
-        ret.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.9).isActive = true
+        pending.append(switchKey.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.3))
+        pending.append(comma.widthAnchor.constraint(equalTo: unit.widthAnchor))
+        pending.append(period.widthAnchor.constraint(equalTo: unit.widthAnchor))
+        pending.append(ret.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 1.9))
 
         rows.forEach { rowsStack.addArrangedSubview($0) }
+        NSLayoutConstraint.activate(pending)
         updateShiftUI()
         updateReturnKey()
     }
