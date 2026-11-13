@@ -6,13 +6,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.3.0"
+    MARKETING_VERSION: "0.3.1"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGN_IDENTITY: ""
     TARGETED_DEVICE_FAMILY: "1"
     ENABLE_BITCODE: "NO"
+    OTHER_LDFLAGS: "$(inherited) -weak_framework FoundationModels"
 targets:
   TecladoVoz:
     type: application
@@ -24,6 +25,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Teclado Voz
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
         NSMicrophoneUsageDescription: O microfone é usado para transformar sua fala em texto no teclado.
@@ -39,7 +42,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kaue.tecladovoz
-        OTHER_LDFLAGS: "$(inherited) -weak_framework FoundationModels"
   Teclado:
     type: app-extension
     platform: iOS
@@ -48,6 +50,8 @@ targets:
       path: Keyboard/Info.plist
       properties:
         CFBundleDisplayName: Teclado Voz
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController

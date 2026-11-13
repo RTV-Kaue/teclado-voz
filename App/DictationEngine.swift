@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Speech
+import UIKit
 
 /// Mantém o microfone ativo em segundo plano ("sessão") e faz o reconhecimento de voz.
 /// O teclado manda comandos (iniciar/parar) por notificações e recebe o texto pelo App Group.
@@ -293,33 +294,48 @@ final class DictationEngine: ObservableObject {
         feed = nil
         let gen = generation
         let text = TextProcessor.process(raw, settings: settings)
-        if settings.aiPunctuation && Punctuator.aiAvailable && !Punctuator.hasPunctuation(text) {
+        let wantsAI = settings.aiPunctuation && Punctuator.aiAvailable && !Punctuator.hasPunctuation(text)
+        if wantsAI && UIApplication.shared.applicationState == .active {
+            // App na tela: ele mesmo pontua
             publish(status: "Pontuando…")
             Task { [weak self] in
-                let ai = await Punctuator.punctuateWithAI(text)
+                let (ai, why) = await Punctuator.punctuateWithAI(text)
                 await MainActor.run {
                     guard let self, gen == self.generation else { return }
-                    self.lastPunctuation = ai != nil ? "IA do iPhone" : "regras simples (IA não respondeu)"
-                    self.finishDelivery(ai ?? Punctuator.heuristic(text))
+                    self.setDiag(ai != nil ? why : "regras simples (\(why))")
+                    self.finishDelivery(ai ?? Punctuator.heuristic(text), needsAI: false)
                 }
             }
+        } else if wantsAI {
+            // App em segundo plano: o teclado (que está na tela) pontua
+            finishDelivery(text, needsAI: true)
         } else {
-            lastPunctuation = Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples"
-            finishDelivery(Punctuator.heuristic(text))
+            setDiag(Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples")
+            finishDelivery(Punctuator.heuristic(text), needsAI: false)
         }
     }
 
-    private func finishDelivery(_ text: String) {
+    private func setDiag(_ s: String) {
+        lastPunctuation = s
+        Shared.defaults?.set(s, forKey: K.diagPunct)
+    }
+
+    private func finishDelivery(_ text: String, needsAI: Bool) {
         lastResult = text
         partial = ""
         lastActivity = Date()
         if let d = Shared.defaults {
             d.set(text, forKey: K.result)
+            d.set(needsAI, forKey: K.needsAI)
             d.set(d.integer(forKey: K.resultID) + 1, forKey: K.resultID)
             d.set(Date().timeIntervalSince1970, forKey: K.resultTime)
         }
         DarwinNote.post(DarwinNote.result)
         publish(status: "Sessão ativa")
+    }
+
+    func reloadDiag() {
+        lastPunctuation = Shared.defaults?.string(forKey: K.diagPunct) ?? "—"
     }
 
     private func finishWithoutText() {

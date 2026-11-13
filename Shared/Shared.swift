@@ -12,6 +12,8 @@ enum K {
     static let resultTime = "result.time"
     static let consumedID = "result.consumed"
     static let learned = "learned.words"
+    static let needsAI = "result.needsAI"
+    static let diagPunct = "diag.punct"
 }
 
 enum Shared {

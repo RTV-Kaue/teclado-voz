@@ -302,7 +302,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             text = p.isEmpty ? "Ouvindo… fale agora" : p
             image = "stop.fill"; color = .systemRed
         } else if waitingResult {
-            state = "wait"; text = "Processando…"
+            state = "wait"; text = statusLabel.text == "Pontuando…" ? "Pontuando…" : "Processando…"
             image = "ellipsis"; color = .systemOrange
         } else if alive {
             state = "ready"; text = ""
@@ -313,6 +313,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         }
         if statusLabel.text != text { statusLabel.text = text }
         if (state == "rec" || state == "wait") && !suggestions.isEmpty { setSuggestions([]) }
+        if state == "rec" && settings.aiPunctuation { Punctuator.prewarm() }
         guard state != lastStatusKey else { return }
         lastStatusKey = state
         var cfg = micButton.configuration ?? .filled()
@@ -331,7 +332,30 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         lastStatusKey = ""
         let age = Date().timeIntervalSince1970 - d.double(forKey: K.resultTime)
         guard age < 30, let raw = d.string(forKey: K.result), !raw.isEmpty else { refreshStatus(); return }
-        textDocumentProxy.insertText(adjustForContext(raw))
+        if d.bool(forKey: K.needsAI) {
+            // Pontua aqui no teclado (a IA não responde para apps em segundo plano)
+            waitingResult = true
+            waitingSince = Date()
+            lastStatusKey = ""
+            refreshStatus()
+            statusLabel.text = "Pontuando…"
+            Task { [weak self] in
+                let (ai, why) = await Punctuator.punctuateWithAI(raw)
+                await MainActor.run {
+                    guard let self else { return }
+                    Shared.defaults?.set(ai != nil ? why : "regras simples (\(why))", forKey: K.diagPunct)
+                    self.insertDictated(ai ?? Punctuator.heuristic(raw))
+                }
+            }
+            return
+        }
+        insertDictated(raw)
+    }
+
+    private func insertDictated(_ text: String) {
+        waitingResult = false
+        lastStatusKey = ""
+        textDocumentProxy.insertText(adjustForContext(text))
         clearWordState()
         autoCap()
         refreshStatus()

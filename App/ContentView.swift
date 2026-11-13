@@ -117,7 +117,13 @@ struct ContentView: View {
             }
             .navigationTitle("Teclado Voz")
             .onChange(of: settings) { _, newValue in newValue.save() }
-            .onAppear { engine.requestPermissions {} }
+            .onAppear {
+                engine.requestPermissions {}
+                engine.reloadDiag()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                engine.reloadDiag()
+            }
         }
     }
 
