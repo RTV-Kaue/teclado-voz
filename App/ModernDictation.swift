@@ -142,9 +142,17 @@ final class ModernDictation {
         onPartial?(Self.join(finalized, volatile))
     }
 
-    private static func join(_ a: String, _ b: String) -> String {
-        if a.isEmpty { return b }
-        if b.isEmpty { return a }
+    private static func join(_ a: String, _ b0: String) -> String {
+        if a.isEmpty { return b0 }
+        if b0.isEmpty { return a }
+        // O motor começa cada trecho com maiúscula; no meio da frase isso fica errado
+        var b = b0
+        let prevEnd = a.trimmingCharacters(in: .whitespaces).last
+        let chars = Array(b.trimmingCharacters(in: .whitespaces))
+        if let p = prevEnd, !".!?".contains(p), chars.count > 1, chars[0].isUppercase, chars[1].isLowercase {
+            let trimmed = b.trimmingCharacters(in: .whitespaces)
+            b = trimmed.prefix(1).lowercased() + trimmed.dropFirst()
+        }
         if a.hasSuffix(" ") || b.hasPrefix(" ") { return a + b }
         return a + " " + b
     }

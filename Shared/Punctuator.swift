@@ -35,6 +35,8 @@ enum Punctuator {
     (vírgulas, pontos, ponto de interrogação, ponto de exclamação) e letras maiúsculas onde for correto. \
     Não troque, não corrija, não remova e não acrescente palavras. Não escreva números por extenso nem em algarismos de forma diferente. \
     Responda somente com o texto pontuado, sem aspas e sem comentários.
+    Exemplo de entrada: oi tudo bem você vem amanhã eu chego às oito mas não sei se vou atrasar
+    Exemplo de saída: Oi, tudo bem? Você vem amanhã? Eu chego às oito, mas não sei se vou atrasar.
     """
 
     // Sessão preparada com antecedência (carrega o modelo enquanto a pessoa fala)
@@ -66,7 +68,7 @@ enum Punctuator {
         }
         guard let ai = answer.0 else { return answer }
         guard let merged = transferPunctuation(original: text, ai: ai) else {
-            return (nil, "IA mudou as palavras: \(ai.prefix(60))")
+            return (nil, "IA não pontuou ou mudou palavras: \(ai.prefix(80))")
         }
         return (merged, "IA do iPhone")
     }
@@ -123,7 +125,12 @@ enum Punctuator {
         var out: [String] = []
         var j = 0
         var matched = 0
-        for w in words {
+        var sentenceStart = true
+        for w0 in words {
+            let w = w0
+            defer {
+                if let last = out.last?.last { sentenceStart = ".!?…".contains(last) }
+            }
             let k = fold(w)
             var word = w
             for look in 0..<3 where j + look < toks.count {
@@ -131,8 +138,12 @@ enum Punctuator {
                     let t = toks[j + look]
                     j += look + 1
                     matched += 1
-                    if t.upper, let f = word.first, f.isLowercase {
+                    // maiúscula só no começo de frase (a IA às vezes capitaliza à toa)
+                    if sentenceStart, let f = word.first, f.isLowercase {
                         word = word.prefix(1).uppercased() + word.dropFirst()
+                    } else if !sentenceStart, !t.upper, word.count > 1,
+                              let f = word.first, f.isUppercase, word.dropFirst().first?.isLowercase == true {
+                        word = word.prefix(1).lowercased() + word.dropFirst()
                     }
                     if !t.trail.isEmpty, let last = word.last, !punct.contains(last) {
                         word += t.trail
@@ -143,7 +154,9 @@ enum Punctuator {
             out.append(word)
         }
         guard Double(matched) >= Double(words.count) * 0.7 else { return nil }
-        return out.joined(separator: " ")
+        let result = out.joined(separator: " ")
+        guard hasPunctuation(result) else { return nil }
+        return result
     }
 
     static func hasPunctuation(_ s: String) -> Bool {
