@@ -6,10 +6,14 @@ final class LiveActivityController {
     static let shared = LiveActivityController()
     private var activity: Activity<RecordingAttributes>?
     private var phase = ""
+    private(set) var status = "ainda não iniciado"
 
     /// Só pode ser chamado com o app na tela (regra do iOS)
     func start() {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            status = "desativado em Ajustes › Teclado Voz › Atividades ao Vivo"
+            return
+        }
         if activity != nil { update("pronto"); return }
         let old = Activity<RecordingAttributes>.activities
         Task { for a in old { await a.end(nil, dismissalPolicy: .immediate) } }
@@ -19,8 +23,10 @@ final class LiveActivityController {
                                             content: .init(state: state, staleDate: nil),
                                             pushType: nil)
             phase = "pronto"
+            status = "ativo"
         } catch {
             activity = nil
+            status = "erro: \(error.localizedDescription)"
         }
     }
 
@@ -35,6 +41,7 @@ final class LiveActivityController {
         guard let a = activity else { return }
         activity = nil
         phase = ""
+        status = "encerrado"
         Task { await a.end(nil, dismissalPolicy: .immediate) }
     }
 }

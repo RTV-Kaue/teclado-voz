@@ -117,7 +117,8 @@ final class DictationEngine: ObservableObject {
         }
         sessionActive = true
         startHeartbeat()
-        if UIApplication.shared.applicationState == .active { LiveActivityController.shared.start() }
+        // ao abrir pelo teclado o app ainda está "inativo" (em transição), mas já pode criar o quadro
+        if UIApplication.shared.applicationState != .background { LiveActivityController.shared.start() }
         publish(status: "Sessão ativa")
         return true
     }

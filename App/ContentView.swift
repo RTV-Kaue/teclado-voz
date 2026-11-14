@@ -123,6 +123,7 @@ struct ContentView: View {
                     LabeledContent("Último ditado usou", value: engine.lastEngine)
                     LabeledContent("Pontuação do último", value: engine.lastPunctuation)
                     LabeledContent("IA do iPhone", value: Punctuator.aiStatus)
+                    LabeledContent("Quadro na tela bloqueada", value: LiveActivityController.shared.status)
                     LabeledContent("Versão", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
                 }
             }

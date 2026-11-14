@@ -550,10 +550,11 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
                                         word: c, recordPrev: prev))
             }
         }
-        // Palavra que o teclado não conhece: oferece adicionar ao dicionário
-        if items.isEmpty, w.count >= 2, !isProtected(w), engine.frequency(w) == 0 {
-            items.append(Suggestion(title: "\(w) ＋", insert: w + " ", deleteCount: w.count, learn: w, highlight: false,
-                                    word: nil, recordPrev: prev))
+        // Sem correção: a palavra digitada aparece primeiro (palavra nova ganha ＋ para entrar no dicionário)
+        if items.isEmpty {
+            let unknown = w.count >= 2 && !isProtected(w) && engine.frequency(w) == 0
+            items.append(Suggestion(title: unknown ? "\(w) ＋" : w, insert: w + " ", deleteCount: w.count,
+                                    learn: unknown ? w : nil, highlight: false, word: nil, recordPrev: prev))
         }
         for c in engine.completions(prefix: w, limit: 5) {
             let cc = matchCase(c, like: w)
