@@ -13,6 +13,11 @@ final class WordEngine {
     private var sortedWords: [String] = []
     private var swipeIndex: [String: [String]] = [:]   // primeira+última letra -> palavras
     private var protected: Set<String> = []            // vocabulário técnico + palavras aprendidas
+    private var blocked: Set<String> = []              // palavras que o usuário não quer ver
+    private var boost = 1000                           // frequência dada a palavras aprendidas
+    private var corpusBigrams: [String: [String]] = [:] // palavra -> próximas mais comuns (^ = início de frase)
+    private var userBigrams: [String: [String: Int]] = [:]
+    private var userBigramChanges = 0
     private let queue = DispatchQueue(label: "WordEngine", qos: .userInitiated)
 
     static func key(_ s: String) -> String {
@@ -21,9 +26,9 @@ final class WordEngine {
 
     // MARK: Carregamento
 
-    func load(extra: [String], learned: [String], completion: @escaping () -> Void) {
+    func load(extra: [String], learned: [String], blocked blockedList: [String], completion: @escaping () -> Void) {
         if loaded {
-            setProtected(extra: extra, learned: learned)
+            applyLists(extra: extra, learned: learned, blocked: blockedList)
             completion()
             return
         }
@@ -50,7 +55,16 @@ final class WordEngine {
             }
             for t in learned where !t.isEmpty {
                 let w = t.lowercased()
-                f[w] = max(f[w] ?? 0, topFreq / 200)
+                f[w] = max(f[w] ?? 0, topFreq / 50)
+            }
+            var bigrams: [String: [String]] = [:]
+            if let url = Bundle.main.url(forResource: "bigramas", withExtension: "txt"),
+               let text = try? String(contentsOf: url, encoding: .utf8) {
+                text.enumerateLines { line, _ in
+                    let parts = line.split(separator: "\t")
+                    guard parts.count == 2 else { return }
+                    bigrams[String(parts[0])] = parts[1].split(separator: " ").map(String.init)
+                }
             }
 
             let ordered = f.sorted { $0.value > $1.value }
@@ -75,24 +89,102 @@ final class WordEngine {
                 self.sortedKeys = pairs.map { $0.0 }
                 self.sortedWords = pairs.map { $0.1 }
                 self.swipeIndex = swipe
+                self.corpusBigrams = bigrams
+                self.boost = max(topFreq / 50, 100)
+                self.userBigrams = (Shared.defaults?.dictionary(forKey: "user.bigrams") as? [String: [String: Int]]) ?? [:]
                 self.loaded = true
                 self.loading = false
-                self.setProtected(extra: extra, learned: learned)
+                self.applyLists(extra: extra, learned: learned, blocked: blockedList)
                 completion()
             }
         }
     }
 
-    private func setProtected(extra: [String], learned: [String]) {
+    private func applyLists(extra: [String], learned: [String], blocked blockedList: [String]) {
         protected = Set((extra + learned).map { $0.lowercased() })
+        blocked = Set(blockedList.map { $0.lowercased() })
+        for w in learned { addWord(w.lowercased()) }
     }
 
+    /// Palavra aprendida: fica bem frequente e vira a correção preferida
     func learn(_ word: String) {
         let w = word.lowercased()
+        blocked.remove(w)
         protected.insert(w)
-        if freq[w] == nil { freq[w] = 50 }
+        addWord(w)
+    }
+
+    /// "Não sugerir mais": some das sugestões, correções, previsões e do deslizar
+    func block(_ word: String) {
+        let w = word.lowercased()
+        blocked.insert(w)
+        protected.remove(w)
+    }
+
+    func isBlocked(_ w: String) -> Bool { blocked.contains(w.lowercased()) }
+
+    private func addWord(_ w: String) {
+        guard !w.isEmpty else { return }
+        let isNew = freq[w] == nil
+        freq[w] = max(freq[w] ?? 0, boost)
         let k = WordEngine.key(w)
-        if bestByKey[k] == nil { bestByKey[k] = w }
+        bestByKey[k] = w
+        guard isNew else { return }
+        var lo = 0, hi = sortedKeys.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sortedKeys[mid] < k { lo = mid + 1 } else { hi = mid }
+        }
+        sortedKeys.insert(k, at: lo)
+        sortedWords.insert(w, at: lo)
+        let letters = k.filter { $0.isLetter }
+        if let first = letters.first, let last = letters.last {
+            swipeIndex[String([first, last]), default: []].insert(w, at: 0)
+        }
+    }
+
+    // MARK: Previsão da próxima palavra
+
+    /// prev = palavra anterior (minúscula) ou "^" no começo de frase
+    func predictions(after prev: String, limit: Int) -> [String] {
+        guard loaded else { return [] }
+        var out: [String] = []
+        if let mine = userBigrams[prev] {
+            for (w, _) in mine.sorted(by: { $0.value > $1.value }) where !blocked.contains(w) && !out.contains(w) {
+                out.append(w)
+                if out.count >= limit { return out }
+            }
+        }
+        for w in corpusBigrams[prev] ?? [] where !blocked.contains(w) && !out.contains(w) {
+            out.append(w)
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    /// Aprende a sequência que a pessoa escreveu (para prever melhor da próxima vez)
+    func recordPair(prev: String, word: String) {
+        let p = prev.lowercased(), w = word.lowercased()
+        guard !w.isEmpty, w.allSatisfy({ $0.isLetter || $0 == "-" }), !blocked.contains(w) else { return }
+        userBigrams[p, default: [:]][w, default: 0] += 1
+        userBigramChanges += 1
+        if userBigramChanges >= 10 { saveUserBigrams() }
+    }
+
+    func saveUserBigrams() {
+        guard userBigramChanges > 0 else { return }
+        userBigramChanges = 0
+        if userBigrams.count > 4000 {
+            // mantém só as palavras mais usadas
+            let keep = userBigrams.sorted { $0.value.values.reduce(0, +) > $1.value.values.reduce(0, +) }.prefix(3000)
+            userBigrams = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        Shared.defaults?.set(userBigrams, forKey: "user.bigrams")
+    }
+
+    func forgetUserBigrams() {
+        userBigrams = [:]
+        userBigramChanges = 0
     }
 
     func frequency(_ w: String) -> Int { freq[w.lowercased()] ?? 0 }
@@ -105,6 +197,12 @@ final class WordEngine {
         let lw = typed.lowercased()
         guard lw.count >= 2, lw.allSatisfy({ $0.isLetter }) else { return nil }
         if protected.contains(lw) { return nil }
+        let r = rawCorrection(lw)
+        if let r, blocked.contains(r) { return nil }
+        return r
+    }
+
+    private func rawCorrection(_ lw: String) -> String? {
         let k = WordEngine.key(lw)
 
         if let known = freq[lw] {
@@ -119,7 +217,7 @@ final class WordEngine {
         var bestWord: String?
         var bestF = 0
         for e in WordEngine.edits1(k) {
-            if let w = bestByKey[e], let f = freq[w], f > bestF {
+            if let w = bestByKey[e], !blocked.contains(w), let f = freq[w], f > bestF {
                 bestF = f
                 bestWord = w
             }
@@ -160,7 +258,7 @@ final class WordEngine {
         var scanned = 0
         while i < sortedKeys.count, scanned < 4000, sortedKeys[i].hasPrefix(p) {
             let w = sortedWords[i]
-            found.append((w, freq[w] ?? 0))
+            if !blocked.contains(w) { found.append((w, freq[w] ?? 0)) }
             i += 1
             scanned += 1
         }
@@ -186,7 +284,7 @@ final class WordEngine {
         for (fi, f) in firsts.enumerated() {
             for (li, l) in lasts.enumerated() {
                 guard let words = swipeIndex[String([f, l])] else { continue }
-                for w in words {
+                for w in words where !blocked.contains(w) {
                     let k = Array(WordEngine.key(w).filter { $0.isLetter })
                     guard !k.isEmpty else { continue }
                     // remove letras repetidas seguidas (carro -> caro)

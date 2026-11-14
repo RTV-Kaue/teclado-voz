@@ -14,6 +14,7 @@ enum K {
     static let learned = "learned.words"
     static let needsAI = "result.needsAI"
     static let diagPunct = "diag.punct"
+    static let blocked = "blocked.words"
 }
 
 enum Shared {

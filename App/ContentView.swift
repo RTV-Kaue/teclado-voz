@@ -6,6 +6,7 @@ struct ContentView: View {
     @Binding var showReturnHint: Bool
     @State private var settings = KeyboardSettings.load()
     @State private var testText = ""
+    @State private var groqKey = GroqWhisper.apiKey
 
     var body: some View {
         NavigationStack {
@@ -83,12 +84,24 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Button("Esquecer palavras aprendidas", role: .destructive) {
-                        Shared.defaults?.removeObject(forKey: K.learned)
-                        DarwinNote.post(DarwinNote.settings)
-                    }
+                    Toggle("Usar Whisper online quando houver internet", isOn: $settings.onlineWhisper)
+                    SecureField("Chave da Groq (gsk_...)", text: $groqKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: groqKey) { _, v in
+                            UserDefaults.standard.set(v.trimmingCharacters(in: .whitespacesAndNewlines), forKey: GroqWhisper.keyName)
+                        }
+                    Link("Criar chave grátis em console.groq.com", destination: URL(string: "https://console.groq.com/keys")!)
+                } header: {
+                    Text("Transcrição online (grátis)")
                 } footer: {
-                    Text("Quando você apaga logo depois de uma correção, o teclado volta a palavra original e aprende ela.")
+                    Text("Com internet, o áudio vai para o Whisper (Groq), que entende melhor e pontua muito bem. Plano gratuito: até 2.000 ditados por dia. Sem internet, usa o reconhecimento do iPhone.")
+                }
+
+                Section {
+                    NavigationLink("Minhas palavras") { MyWordsView() }
+                } footer: {
+                    Text("Tocar na palavra entre aspas na barra do teclado ensina a palavra. Segurar uma sugestão permite remover ela do dicionário.")
                 }
 
                 Section("Testar o teclado") {
@@ -209,5 +222,49 @@ struct ReplacementsView: View {
         }
         .navigationTitle("Substituições")
         .toolbar { EditButton() }
+    }
+}
+
+struct MyWordsView: View {
+    @State private var learned: [String] = Shared.defaults?.stringArray(forKey: K.learned) ?? []
+    @State private var blocked: [String] = Shared.defaults?.stringArray(forKey: K.blocked) ?? []
+
+    var body: some View {
+        List {
+            Section {
+                if learned.isEmpty { Text("Nenhuma ainda").foregroundStyle(.secondary) }
+                ForEach(learned, id: \.self) { Text($0) }
+                    .onDelete { learned.remove(atOffsets: $0); save() }
+            } header: {
+                Text("Aprendidas (\(learned.count))")
+            } footer: {
+                Text("Deslize para a esquerda para apagar uma palavra aprendida errada.")
+            }
+            Section {
+                if blocked.isEmpty { Text("Nenhuma").foregroundStyle(.secondary) }
+                ForEach(blocked, id: \.self) { Text($0) }
+                    .onDelete { blocked.remove(atOffsets: $0); save() }
+            } header: {
+                Text("Removidas do dicionário (\(blocked.count))")
+            } footer: {
+                Text("Deslize para devolver a palavra ao dicionário.")
+            }
+            Section {
+                Button("Esquecer as previsões aprendidas", role: .destructive) {
+                    Shared.defaults?.removeObject(forKey: "user.bigrams")
+                    DarwinNote.post(DarwinNote.settings)
+                }
+            } footer: {
+                Text("O teclado aprende quais palavras você costuma escrever em sequência para prever a próxima.")
+            }
+        }
+        .navigationTitle("Minhas palavras")
+        .toolbar { EditButton() }
+    }
+
+    private func save() {
+        Shared.defaults?.set(learned, forKey: K.learned)
+        Shared.defaults?.set(blocked, forKey: K.blocked)
+        DarwinNote.post(DarwinNote.settings)
     }
 }

@@ -36,6 +36,34 @@ jobs:
           wc -l Keyboard/palavras.txt
           head -5 Keyboard/palavras.txt
 
+      - name: Gerar previsão de palavras (frases do Tatoeba)
+        continue-on-error: true
+        run: |
+          curl -fsSL https://downloads.tatoeba.org/exports/per_language/por/por_sentences.tsv.bz2 -o /tmp/por.tsv.bz2
+          python3 - <<'PY'
+          import bz2, re, collections
+          pairs = collections.defaultdict(collections.Counter)
+          word = re.compile(r"[a-záàâãéêíóôõúüç]+(?:-[a-záàâãéêíóôõúüç]+)*")
+          with bz2.open('/tmp/por.tsv.bz2', 'rt', encoding='utf-8') as f:
+              for line in f:
+                  parts = line.rstrip('\n').split('\t')
+                  if len(parts) < 3: continue
+                  for sent in re.split(r'[.!?]+', parts[2].lower()):
+                      toks = word.findall(sent)
+                      prev = '^'
+                      for t in toks:
+                          pairs[prev][t] += 1
+                          prev = t
+          with open('Keyboard/bigramas.txt', 'w', encoding='utf-8') as out:
+              n = 0
+              for w, c in pairs.items():
+                  top = [x for x, k in c.most_common(5) if k >= 2]
+                  if top:
+                      out.write(w + '\t' + ' '.join(top) + '\n'); n += 1
+          print('bigramas:', n)
+          PY
+          wc -l Keyboard/bigramas.txt
+
       - name: Gerar projeto
         run: xcodegen generate
 

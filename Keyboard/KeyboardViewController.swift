@@ -26,6 +26,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         let deleteCount: Int
         let learn: String?
         let highlight: Bool
+        var word: String? = nil       // palavra que pode ser bloqueada (segurar)
+        var recordPrev: String? = nil // para aprender a sequência de palavras
     }
 
     static let accents: [String: [String]] = [
@@ -54,6 +56,11 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     private let topBar = UIView()
     private let statusLabel = UILabel()
     private let suggestionStack = UIStackView()
+    private let blockBar = UIStackView()
+    private let blockLabel = UILabel()
+    private var blockCandidate: String?
+    private var suggestionPressTimer: Timer?
+    private var suggestionPressed: Int?
     private var suggestionButtons: [UIButton] = []
     private var suggestions: [Suggestion] = []
     private let micButton = UIButton(type: .system)
@@ -163,6 +170,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         isVisible = false
+        engine.saveUserBigrams()
         pollTimer?.invalidate()
         pollTimer = nil
         stopDeleteRepeat()
@@ -186,7 +194,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
     private func loadDictionary() {
         let learned = Shared.defaults?.stringArray(forKey: K.learned) ?? []
-        engine.load(extra: settings.vocabulary, learned: learned) { [weak self] in
+        let blocked = Shared.defaults?.stringArray(forKey: K.blocked) ?? []
+        if Shared.defaults?.object(forKey: "user.bigrams") == nil { engine.forgetUserBigrams() }
+        engine.load(extra: settings.vocabulary, learned: learned, blocked: blocked) { [weak self] in
             self?.updateSuggestions()
         }
     }
@@ -217,7 +227,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             b.titleLabel?.lineBreakMode = .byTruncatingTail
             b.setTitleColor(.label, for: .normal)
             b.layer.cornerRadius = 8
-            b.addTarget(self, action: #selector(suggestionTapped(_:)), for: .touchUpInside)
+            b.addTarget(self, action: #selector(suggestionDown(_:)), for: .touchDown)
+            b.addTarget(self, action: #selector(suggestionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
             suggestionButtons.append(b)
             suggestionStack.addArrangedSubview(b)
         }
@@ -228,7 +239,27 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         micButton.configuration = cfg
         micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
-        for v in [dismissButton, statusLabel, suggestionStack, micButton] as [UIView] {
+        blockBar.axis = .horizontal
+        blockBar.spacing = 8
+        blockBar.isHidden = true
+        blockLabel.font = .systemFont(ofSize: 14)
+        blockLabel.textColor = .secondaryLabel
+        blockLabel.lineBreakMode = .byTruncatingMiddle
+        blockLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let removeB = UIButton(type: .system)
+        removeB.setTitle("Remover", for: .normal)
+        removeB.setTitleColor(.systemRed, for: .normal)
+        removeB.titleLabel?.font = .boldSystemFont(ofSize: 15)
+        removeB.addTarget(self, action: #selector(blockConfirm), for: .touchDown)
+        let cancelB = UIButton(type: .system)
+        cancelB.setTitle("Cancelar", for: .normal)
+        cancelB.titleLabel?.font = .systemFont(ofSize: 15)
+        cancelB.addTarget(self, action: #selector(blockCancel), for: .touchDown)
+        [blockLabel, removeB, cancelB].forEach { blockBar.addArrangedSubview($0) }
+        removeB.setContentHuggingPriority(.required, for: .horizontal)
+        cancelB.setContentHuggingPriority(.required, for: .horizontal)
+
+        for v in [dismissButton, statusLabel, suggestionStack, blockBar, micButton] as [UIView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             topBar.addSubview(v)
         }
@@ -244,6 +275,10 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             suggestionStack.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
             suggestionStack.topAnchor.constraint(equalTo: topBar.topAnchor, constant: 3),
             suggestionStack.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -3),
+            blockBar.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 6),
+            blockBar.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
+            blockBar.topAnchor.constraint(equalTo: topBar.topAnchor),
+            blockBar.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
             micButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -8),
             micButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             micButton.widthAnchor.constraint(equalToConstant: 58),
@@ -265,10 +300,16 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             } else {
                 DarwinNote.post(DarwinNote.start)
             }
-        } else if let url = URL(string: "\(Shared.urlScheme)://dictate") {
-            statusLabel.text = openContainingApp(url)
-                ? "Abrindo o app… depois toque em ◀ para voltar"
-                : "Abra o app Teclado Voz para ativar o ditado"
+        } else {
+            var comps = URLComponents()
+            comps.scheme = Shared.urlScheme
+            comps.host = "dictate"
+            if let host = KeyboardHost.resolve(from: self) {
+                comps.queryItems = [URLQueryItem(name: "host", value: host)]
+            }
+            if let url = comps.url {
+                statusLabel.text = openContainingApp(url) ? "Abrindo o app…" : "Abra o app Teclado Voz para ativar o ditado"
+            }
             return
         }
         lastStatusKey = ""
@@ -410,6 +451,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
     private func setSuggestions(_ items: [Suggestion]) {
         suggestions = Array(items.prefix(3))
+        if !blockBar.isHidden { return }   // menu "remover" aberto
         let show = !suggestions.isEmpty
         suggestionStack.isHidden = !show
         statusLabel.isHidden = show
@@ -439,34 +481,103 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             return
         }
         let w = currentWord()
-        guard !w.isEmpty, w.allSatisfy({ $0.isLetter }) else {
+        if w.isEmpty {
+            // Previsão da próxima palavra
+            guard let prev = previousWord(droppingCurrent: "") else { setSuggestions([]); return }
+            let items = engine.predictions(after: prev, limit: 3).map { p -> Suggestion in
+                let t = shift == .on ? p.prefix(1).uppercased() + p.dropFirst() : (shift == .locked ? p.uppercased() : p)
+                return Suggestion(title: t, insert: t + " ", deleteCount: 0, learn: nil, highlight: false,
+                                  word: p, recordPrev: prev)
+            }
+            setSuggestions(items)
+            return
+        }
+        guard w.allSatisfy({ $0.isLetter }) else {
             setSuggestions([])
             return
         }
+        let prev = previousWord(droppingCurrent: w)
         var items: [Suggestion] = []
         if settings.autocorrect, !isProtected(w), let c = engine.correction(for: w) {
             let fixed = matchCase(c, like: w)
             if fixed != w {
-                items.append(Suggestion(title: "“\(w)”", insert: w + " ", deleteCount: w.count, learn: w, highlight: false))
-                items.append(Suggestion(title: fixed, insert: fixed + " ", deleteCount: w.count, learn: nil, highlight: true))
+                items.append(Suggestion(title: "“\(w)”", insert: w + " ", deleteCount: w.count, learn: w, highlight: false,
+                                        word: nil, recordPrev: prev))
+                items.append(Suggestion(title: fixed, insert: fixed + " ", deleteCount: w.count, learn: nil, highlight: true,
+                                        word: c, recordPrev: prev))
             }
         }
         for c in engine.completions(prefix: w, limit: 5) {
             let cc = matchCase(c, like: w)
             if cc != w && !items.contains(where: { $0.title == cc }) && items.count < 3 {
-                items.append(Suggestion(title: cc, insert: cc + " ", deleteCount: w.count, learn: nil, highlight: false))
+                items.append(Suggestion(title: cc, insert: cc + " ", deleteCount: w.count, learn: nil, highlight: false,
+                                        word: c, recordPrev: prev))
             }
         }
         setSuggestions(items)
     }
 
-    @objc private func suggestionTapped(_ sender: UIButton) {
+    @objc private func suggestionDown(_ sender: UIButton) {
         guard sender.tag < suggestions.count else { return }
-        let s = suggestions[sender.tag]
+        suggestionPressed = sender.tag
+        sender.backgroundColor = KeyView.pressedColor
+        suggestionPressTimer?.invalidate()
+        suggestionPressTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: false) { [weak self] _ in
+            guard let self, let i = self.suggestionPressed else { return }
+            self.suggestionPressed = nil
+            self.showBlockMenu(i)
+        }
+    }
+
+    @objc private func suggestionUp(_ sender: UIButton) {
+        suggestionPressTimer?.invalidate()
+        guard suggestionPressed == sender.tag else { return }
+        suggestionPressed = nil
+        acceptSuggestion(sender.tag)
+    }
+
+    private func showBlockMenu(_ i: Int) {
+        guard i < suggestions.count, let w = suggestions[i].word else {
+            setSuggestions(suggestions)
+            return
+        }
+        if settings.haptics && hasFullAccess { haptic.impactOccurred() }
+        blockCandidate = w
+        blockLabel.text = "Não sugerir mais “\(w)”?"
+        suggestionStack.isHidden = true
+        statusLabel.isHidden = true
+        blockBar.isHidden = false
+    }
+
+    @objc private func blockConfirm() {
+        if let w = blockCandidate?.lowercased() {
+            engine.block(w)
+            if let d = Shared.defaults {
+                var arr = d.stringArray(forKey: K.blocked) ?? []
+                if !arr.contains(w) { arr.append(w) }
+                d.set(arr, forKey: K.blocked)
+                d.set((d.stringArray(forKey: K.learned) ?? []).filter { $0 != w }, forKey: K.learned)
+            }
+        }
+        blockCancel()
+    }
+
+    @objc private func blockCancel() {
+        blockCandidate = nil
+        blockBar.isHidden = true
+        updateSuggestions()
+    }
+
+    private func acceptSuggestion(_ index: Int) {
+        guard index < suggestions.count else { return }
+        let s = suggestions[index]
         if settings.haptics && hasFullAccess { haptic.impactOccurred() }
         for _ in 0..<s.deleteCount { textDocumentProxy.deleteBackward() }
         textDocumentProxy.insertText(s.insert)
         if let l = s.learn { learnWord(l) }
+        if let prev = s.recordPrev {
+            engine.recordPair(prev: prev, word: s.insert.trimmingCharacters(in: .whitespaces))
+        }
         let wasSwipe = pendingSwipeSpace
         clearWordState()
         pendingSwipeSpace = wasSwipe
@@ -498,6 +609,30 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             if ch.isLetter || ch.isNumber || ch == "-" { chars.append(ch) } else { break }
         }
         return String(chars.reversed())
+    }
+
+    /// Palavra antes da atual (minúscula), "^" no começo de frase, ou nil se não dá para prever
+    private func previousWord(droppingCurrent current: String) -> String? {
+        var ctx = textDocumentProxy.documentContextBeforeInput ?? ""
+        if !current.isEmpty { ctx = String(ctx.dropLast(current.count)) }
+        if ctx.isEmpty { return "^" }
+        guard let last = ctx.last, last.isWhitespace else { return current.isEmpty ? nil : "^" }
+        let t = ctx.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let end = t.last else { return "^" }
+        if ".!?\n".contains(end) || ctx.hasSuffix("\n") { return "^" }
+        var chars: [Character] = []
+        for ch in t.reversed() {
+            if ch.isLetter || ch == "-" { chars.append(ch) } else if chars.isEmpty && ",;:".contains(ch) { continue } else { break }
+        }
+        let w = String(chars.reversed()).lowercased()
+        return w.isEmpty ? "^" : w
+    }
+
+    /// Aprende a sequência "palavra anterior → palavra digitada" (antes do espaço/pontuação)
+    private func recordTypedWord() {
+        let w = currentWord()
+        guard w.count >= 1, w.allSatisfy({ $0.isLetter }), let prev = previousWord(droppingCurrent: w) else { return }
+        engine.recordPair(prev: prev, word: w)
     }
 
     private func isProtected(_ w: String) -> Bool {
@@ -866,7 +1001,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         case .space:
             if !a.cursorMoved { spaceTapped() } else { updateSuggestions() }
         case .ret:
-            if let fix = autocorrectCurrentWord() {
+            let retFix = autocorrectCurrentWord()
+            recordTypedWord()
+            if let fix = retFix {
                 textDocumentProxy.insertText("\n")
                 lastCorrection = (fix.0, fix.1, "\n")
             } else {
@@ -896,6 +1033,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
                 textDocumentProxy.deleteBackward()   // "palavra ." -> "palavra."
             } else {
                 fix = autocorrectCurrentWord()
+                recordTypedWord()
             }
         }
         let text = (!raw && shift != .off && currentLayer == .letters) ? s.uppercased() : s
@@ -922,6 +1060,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             return
         }
         let fix = autocorrectCurrentWord()
+        recordTypedWord()
         let now = Date()
         let ctx = textDocumentProxy.documentContextBeforeInput ?? ""
         if fix == nil, now.timeIntervalSince(lastSpaceTap) < 0.4, ctx.hasSuffix(" "),
@@ -981,6 +1120,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         if let last = before.last, !last.isWhitespace, !"([{\"'“/".contains(last) {
             textDocumentProxy.insertText(" ")
         }
+        if let prev = previousWord(droppingCurrent: "") { engine.recordPair(prev: prev, word: best) }
         textDocumentProxy.insertText(word + " ")
         lastCorrection = nil
         lastSwipe = (word, alts)

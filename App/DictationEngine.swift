@@ -40,6 +40,16 @@ final class DictationEngine: ObservableObject {
         set { lock.lock(); _feed = newValue; lock.unlock() }
     }
 
+    // Whisper online (Groq)
+    private let recorder16k = AudioRecorder16k()
+    private var _capture = false
+    private var capture: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _capture }
+        set { lock.lock(); _capture = newValue; lock.unlock() }
+    }
+    private var groqTask: Task<(String?, String), Never>?
+    private var onlineEnabled: Bool { settings.onlineWhisper && !GroqWhisper.apiKey.isEmpty }
+
     private var request: SFSpeechAudioBufferRecognitionRequest? {
         get { lock.lock(); defer { lock.unlock() }; return _request }
         set { lock.lock(); _request = newValue; lock.unlock() }
@@ -134,6 +144,7 @@ final class DictationEngine: ObservableObject {
             guard let self else { return }
             self.request?.append(buffer)
             self.feed?(buffer)
+            if self.capture { self.recorder16k.append(buffer) }
         }
         audioEngine.prepare()
         try audioEngine.start()
@@ -165,6 +176,12 @@ final class DictationEngine: ObservableObject {
         guard startSession() else { return }
         guard !recording else { return }
         settings = KeyboardSettings.load()
+        groqTask?.cancel()
+        groqTask = nil
+        if onlineEnabled {
+            recorder16k.reset()
+            capture = true
+        }
         generation += 1
         let gen = generation
         delivered = false
@@ -241,6 +258,13 @@ final class DictationEngine: ObservableObject {
 
     func stopDictation() {
         guard recording else { return }
+        capture = false
+        if onlineEnabled && recorder16k.seconds > 0.4 {
+            let wav = GroqWhisper.wav(from: recorder16k.take())
+            let words = settings.vocabulary.filter { !$0.isEmpty }.prefix(40).joined(separator: ", ")
+            let prompt = "Transcrição em português do Brasil, com pontuação correta: vírgulas, pontos e pontos de interrogação." + (words.isEmpty ? "" : " Termos: \(words).")
+            groqTask = Task { await GroqWhisper.transcribe(wav: wav, prompt: prompt) }
+        }
         recording = false
         request?.endAudio()
         request = nil
@@ -260,6 +284,9 @@ final class DictationEngine: ObservableObject {
 
     func cancelDictation() {
         generation += 1
+        capture = false
+        groqTask?.cancel()
+        groqTask = nil
         feed = nil
         if #available(iOS 26.0, *), let m = modern as? ModernDictation { m.cancel() }
         modern = nil
@@ -293,6 +320,34 @@ final class DictationEngine: ObservableObject {
         task = nil
         feed = nil
         let gen = generation
+        if let gt = groqTask {
+            groqTask = nil
+            publish(status: "Transcrevendo online…")
+            Task { [weak self] in
+                let (online, why) = await gt.value
+                await MainActor.run {
+                    guard let self, gen == self.generation else { return }
+                    if let online {
+                        let text = TextProcessor.process(online, settings: self.settings)
+                        self.setDiag(why)
+                        self.finishDelivery(Punctuator.heuristic(text), needsAI: false)
+                    } else if raw.trimmingCharacters(in: .whitespaces).isEmpty {
+                        self.setDiag("nada reconhecido (\(why))")
+                        self.publish(status: "Nada reconhecido. Sessão ativa")
+                    } else {
+                        self.deliverLocal(raw, note: why)
+                    }
+                }
+            }
+            return
+        }
+        deliverLocal(raw, note: nil)
+    }
+
+    /// Pontuação sem internet: IA do iPhone ou regras simples
+    private func deliverLocal(_ raw: String, note: String?) {
+        let gen = generation
+        let suffix = note.map { " — online falhou: \($0)" } ?? ""
         let text = TextProcessor.process(raw, settings: settings)
         let wantsAI = settings.aiPunctuation && Punctuator.aiAvailable && !Punctuator.hasPunctuation(text)
         if wantsAI && UIApplication.shared.applicationState == .active {
@@ -302,15 +357,16 @@ final class DictationEngine: ObservableObject {
                 let (ai, why) = await Punctuator.punctuateWithAI(text)
                 await MainActor.run {
                     guard let self, gen == self.generation else { return }
-                    self.setDiag(ai != nil ? why : "regras simples (\(why))")
+                    self.setDiag((ai != nil ? why : "regras simples (\(why))") + suffix)
                     self.finishDelivery(ai ?? Punctuator.heuristic(text), needsAI: false)
                 }
             }
         } else if wantsAI {
             // App em segundo plano: o teclado (que está na tela) pontua
+            if !suffix.isEmpty { Shared.defaults?.set("online falhou: \(note ?? "")", forKey: K.diagPunct) }
             finishDelivery(text, needsAI: true)
         } else {
-            setDiag(Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples")
+            setDiag((Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples") + suffix)
             finishDelivery(Punctuator.heuristic(text), needsAI: false)
         }
     }
@@ -339,6 +395,10 @@ final class DictationEngine: ObservableObject {
     }
 
     private func finishWithoutText() {
+        if groqTask != nil {
+            deliver("")
+            return
+        }
         delivered = true
         recording = false
         request = nil

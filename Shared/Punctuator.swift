@@ -34,9 +34,18 @@ enum Punctuator {
     Reescreva exatamente as mesmas palavras, na mesma ordem, apenas acrescentando pontuação \
     (vírgulas, pontos, ponto de interrogação, ponto de exclamação) e letras maiúsculas onde for correto. \
     Não troque, não corrija, não remova e não acrescente palavras. Não escreva números por extenso nem em algarismos de forma diferente. \
-    Responda somente com o texto pontuado, sem aspas e sem comentários.
-    Exemplo de entrada: oi tudo bem você vem amanhã eu chego às oito mas não sei se vou atrasar
-    Exemplo de saída: Oi, tudo bem? Você vem amanhã? Eu chego às oito, mas não sei se vou atrasar.
+    Regras: use ponto de interrogação em perguntas (inclusive "tudo bem", "né", "certo", "pode ser" no fim de frase \
+    e perguntas sem palavra interrogativa, como "você vem amanhã"); use vírgula depois de saudações e vocativos \
+    ("oi, João"), antes de "mas", "porém", "então" e "porque" quando ligam frases, e para separar itens de listas; \
+    termine cada frase com ponto. Responda somente com o texto pontuado, sem aspas e sem comentários.
+
+    Exemplos:
+    Entrada: oi tudo bem você vem amanhã eu chego às oito mas não sei se vou atrasar
+    Saída: Oi, tudo bem? Você vem amanhã? Eu chego às oito, mas não sei se vou atrasar.
+    Entrada: bom dia pessoal hoje vamos testar o relé de sobrecorrente e depois o diferencial alguém tem dúvida
+    Saída: Bom dia, pessoal. Hoje vamos testar o relé de sobrecorrente e depois o diferencial. Alguém tem dúvida?
+    Entrada: preciso comprar arroz feijão leite e pão pode ser
+    Saída: Preciso comprar arroz, feijão, leite e pão. Pode ser?
     """
 
     // Sessão preparada com antecedência (carrega o modelo enquanto a pessoa fala)
