@@ -208,12 +208,19 @@ final class WordEngine {
         if let known = freq[lw] {
             // Palavra existe, mas sem acento e a versão acentuada é MUITO mais comum (ex.: nao -> não)
             if k == lw, let b = bestByKey[k], b != lw, (freq[b] ?? 0) > known * 20 { return b }
+            // Palavra rara (às vezes de outra língua) muito parecida com uma comum: ahora -> agora
+            if k.count >= 4, let (w, f) = bestEdit(k), w != lw, f > known * 50 { return w }
             return nil
         }
         // Mesma palavra sem acento/cedilha (ex.: acao -> ação, voce -> você)
         if let b = bestByKey[k] { return b }
         // Erros de digitação: uma letra trocada, faltando, sobrando ou invertida
-        guard k.count >= 3 else { return nil }
+        guard k.count >= 3, let (w, f) = bestEdit(k), f >= 30 else { return nil }
+        return w
+    }
+
+    /// Palavra mais comum a uma letra de distância (trocada, faltando, sobrando ou invertida)
+    private func bestEdit(_ k: String) -> (String, Int)? {
         var bestWord: String?
         var bestF = 0
         for e in WordEngine.edits1(k) {
@@ -222,8 +229,10 @@ final class WordEngine {
                 bestWord = w
             }
         }
-        return bestF >= 30 ? bestWord : nil
+        guard let bestWord else { return nil }
+        return (bestWord, bestF)
     }
+
 
     private static let alphabet = Array("abcdefghijklmnopqrstuvwxyz")
 
