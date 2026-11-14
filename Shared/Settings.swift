@@ -105,7 +105,34 @@ enum TextProcessor {
         out = out.replacingOccurrences(of: "[,;:]([.!?])", with: "$1", options: .regularExpression)
         out = out.replacingOccurrences(of: "[ \\t]*\\n[ \\t]*", with: "\n", options: .regularExpression)
         out = capitalizeSentences(out)
+        out = fixMidSentenceCaps(out)
         return out.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static let commonLower: Set<String> = [
+        "e", "ou", "mas", "que", "o", "a", "os", "as", "de", "do", "da", "dos", "das", "em", "no", "na",
+        "nos", "nas", "para", "pra", "por", "com", "sem", "um", "uma", "se", "não", "eu", "ele", "ela",
+        "isso", "isto", "então", "também", "já", "só", "muito", "é", "foi", "vai", "vou", "tem", "está",
+        "estou", "quando", "como", "porque", "depois", "antes", "aqui", "lá", "me", "te", "nós", "você"
+    ]
+
+    /// Tira maiúscula de palavras comuns no meio da frase ("vamos E depois" -> "vamos e depois")
+    static func fixMidSentenceCaps(_ s: String) -> String {
+        var out: [String] = []
+        var prevEnd: Character? = nil
+        for tok in s.components(separatedBy: " ") {
+            var t = tok
+            if let p = prevEnd, !".!?\n:".contains(p) {
+                let core = t.trimmingCharacters(in: .punctuationCharacters)
+                if let f = core.first, f.isUppercase, core.dropFirst().allSatisfy({ $0.isLowercase }),
+                   commonLower.contains(core.lowercased()), let r = t.range(of: core) {
+                    t.replaceSubrange(r, with: core.lowercased())
+                }
+            }
+            if let l = tok.last { prevEnd = l }
+            out.append(t)
+        }
+        return out.joined(separator: " ")
     }
 
     /// Letra maiúscula depois de . ! ? ou quebra de linha (dentro do texto ditado)

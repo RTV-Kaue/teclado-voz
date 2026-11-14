@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.4.0"
+    MARKETING_VERSION: "0.5.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGNING_REQUIRED: "NO"
@@ -18,9 +18,10 @@ targets:
   TecladoVoz:
     type: application
     platform: iOS
-    sources: [App, Shared]
+    sources: [App, Shared, LiveActivity]
     dependencies:
       - target: Teclado
+      - target: Atividade
     info:
       path: App/Info.plist
       properties:
@@ -29,6 +30,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
+        NSSupportsLiveActivities: true
         NSMicrophoneUsageDescription: O microfone é usado para transformar sua fala em texto no teclado.
         NSSpeechRecognitionUsageDescription: O reconhecimento de voz transforma sua fala em texto.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
@@ -42,6 +44,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kaue.tecladovoz
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   Teclado:
     type: app-extension
     platform: iOS
@@ -69,3 +72,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kaue.tecladovoz.teclado
         SWIFT_OBJC_BRIDGING_HEADER: Keyboard/Teclado-Bridging-Header.h
         CLANG_ENABLE_OBJC_ARC: "YES"
+  Atividade:
+    type: app-extension
+    platform: iOS
+    sources: [Widget, LiveActivity]
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: Teclado Voz
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kaue.tecladovoz.atividade

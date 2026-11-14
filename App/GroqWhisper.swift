@@ -20,7 +20,9 @@ enum GroqWhisper {
         guard let url = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions") else { return (nil, "url") }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 8
+        // falas longas precisam de mais tempo para subir e transcrever
+        let seconds = Double(wav.count) / 32000
+        req.timeoutInterval = min(90, 8 + seconds * 0.5)
         let boundary = "Boundary-\(UUID().uuidString)"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")

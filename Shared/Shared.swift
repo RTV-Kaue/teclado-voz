@@ -15,6 +15,8 @@ enum K {
     static let needsAI = "result.needsAI"
     static let diagPunct = "diag.punct"
     static let blocked = "blocked.words"
+    static let phase = "session.phase"        // gravando / online / local / ""
+    static let lastSource = "result.source"   // online / ai / rules
 }
 
 enum Shared {
@@ -62,6 +64,7 @@ enum DarwinNote {
     static let state = "com.kaue.tecladovoz.state"
     static let result = "com.kaue.tecladovoz.result"
     static let settings = "com.kaue.tecladovoz.settings"
+    static let endSession = "com.kaue.tecladovoz.endsession"
 
     static func post(_ name: String) {
         CFNotificationCenterPostNotification(

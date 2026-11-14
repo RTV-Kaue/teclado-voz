@@ -81,6 +81,8 @@ jobs:
         run: |
           APP=build/Release-iphoneos/TecladoVoz.app
           ldid -SKeyboard/Teclado.entitlements "$APP/PlugIns/Teclado.appex/Teclado"
+          if [ -d "$APP/PlugIns/Atividade.appex" ]; then ldid -S "$APP/PlugIns/Atividade.appex/Atividade"; fi
+          ls "$APP/PlugIns"
           ldid -SApp/TecladoVoz.entitlements "$APP/TecladoVoz"
           mkdir -p Payload
           cp -R "$APP" Payload/

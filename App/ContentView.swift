@@ -62,16 +62,29 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Toggle("Motor novo com pontuação (iOS 26)", isOn: $settings.modernDictation)
-                    Toggle("Pontuar com a IA do iPhone", isOn: $settings.aiPunctuation)
-                    Toggle("Preferir reconhecimento offline", isOn: $settings.preferOffline)
-                    sliderRow("Sessão fica ativa por", value: $settings.sessionMinutes, range: 1...60, unit: "min")
+                    Picker("Modo do ditado", selection: $settings.onlineWhisper) {
+                        Text("Online").tag(true)
+                        Text("Offline").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    if settings.onlineWhisper {
+                        SecureField("Chave da Groq (gsk_...)", text: $groqKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onChange(of: groqKey) { _, v in
+                                UserDefaults.standard.set(v.trimmingCharacters(in: .whitespacesAndNewlines), forKey: GroqWhisper.keyName)
+                            }
+                        if groqKey.isEmpty {
+                            Link("Criar chave grátis em console.groq.com", destination: URL(string: "https://console.groq.com/keys")!)
+                        }
+                    }
+                    sliderRow("Microfone fica pronto por", value: $settings.sessionMinutes, range: 1...60, unit: "min")
                 } header: {
-                    Text("Reconhecimento")
+                    Text("Modo")
                 } footer: {
-                    Text(engine.onDeviceAvailable
-                         ? "Reconhecimento offline em português disponível neste iPhone."
-                         : "Reconhecimento offline em português indisponível; será usado o online da Apple (gratuito).")
+                    Text(settings.onlineWhisper
+                         ? "Online: usa o Whisper (grátis, até 2.000 ditados por dia), que entende melhor e pontua muito bem. Sem internet ou se falhar, usa o iPhone automaticamente."
+                         : "Offline: tudo fica no iPhone, sem internet. A pontuação é feita pela IA do iPhone quando disponível.")
                 }
 
                 Section("Personalização") {
@@ -81,21 +94,6 @@ struct ContentView: View {
                     NavigationLink("Substituições (\(settings.replacements.count))") {
                         ReplacementsView(items: $settings.replacements)
                     }
-                }
-
-                Section {
-                    Toggle("Usar Whisper online quando houver internet", isOn: $settings.onlineWhisper)
-                    SecureField("Chave da Groq (gsk_...)", text: $groqKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onChange(of: groqKey) { _, v in
-                            UserDefaults.standard.set(v.trimmingCharacters(in: .whitespacesAndNewlines), forKey: GroqWhisper.keyName)
-                        }
-                    Link("Criar chave grátis em console.groq.com", destination: URL(string: "https://console.groq.com/keys")!)
-                } header: {
-                    Text("Transcrição online (grátis)")
-                } footer: {
-                    Text("Com internet, o áudio vai para o Whisper (Groq), que entende melhor e pontua muito bem. Plano gratuito: até 2.000 ditados por dia. Sem internet, usa o reconhecimento do iPhone.")
                 }
 
                 Section {

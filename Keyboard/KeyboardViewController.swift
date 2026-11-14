@@ -93,6 +93,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     private var lastSwipe: (word: String, alternates: [String])?
     private var pendingSwipeSpace = false
     private var isVisible = false
+    private var keyboardAIRunning = false
+    private var flashing = false
+    private var cachedHost: String?
     private var emojiPanel: EmojiPanel?
 
     // MARK: Ciclo de vida
@@ -160,6 +163,14 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         super.viewDidAppear(animated)
         // O sistema atrasa toques perto das bordas da tela; isso deixa o teclado "engasgado"
         view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+        // Descobre já o app onde o teclado abriu (para voltar a ele na 1ª vez)
+        cachedHost = nil
+        for delay in [0.3, 1.0, 2.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.isVisible, self.cachedHost == nil else { return }
+                self.cachedHost = KeyboardHost.resolve(from: self, wait: 0.05)
+            }
+        }
         var v: UIView? = view.superview
         while let s = v {
             s.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
@@ -304,7 +315,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             var comps = URLComponents()
             comps.scheme = Shared.urlScheme
             comps.host = "dictate"
-            if let host = KeyboardHost.resolve(from: self) {
+            if let host = KeyboardHost.resolve(from: self, wait: 0.15) ?? cachedHost
+                ?? KBHostArbiterHook.lastCapturedHostBundleId() {
                 comps.queryItems = [URLQueryItem(name: "host", value: host)]
             }
             if let url = comps.url {
@@ -321,11 +333,16 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         return waitingResult || (alive && (Shared.defaults?.bool(forKey: K.recording) ?? false))
     }
 
+    static let brandPurple = UIColor(red: 0.49, green: 0.23, blue: 0.93, alpha: 1)
+
     private func refreshStatus() {
         let d = Shared.defaults
         let alive = Shared.sessionAlive
         let recording = alive && (d?.bool(forKey: K.recording) ?? false)
-        if waitingResult && Date().timeIntervalSince(waitingSince) > 6 { waitingResult = false }
+        let phase = alive ? (d?.string(forKey: K.phase) ?? "") : ""
+        if waitingResult && !keyboardAIRunning && phase.isEmpty && Date().timeIntervalSince(waitingSince) > 8 {
+            waitingResult = false
+        }
 
         let state: String
         var text: String
@@ -342,25 +359,72 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             let p = d?.string(forKey: K.partial) ?? ""
             text = p.isEmpty ? "Ouvindo… fale agora" : p
             image = "stop.fill"; color = .systemRed
+        } else if phase == "online" {
+            // 🟣 processando na internet (Whisper)
+            state = "online"; text = "Transcrevendo online…"
+            image = "icloud.and.arrow.up"; color = Self.brandPurple
+        } else if keyboardAIRunning || phase == "local" {
+            // 🔵 processando no iPhone
+            state = "local"; text = "Processando no iPhone…"
+            image = "iphone"; color = .systemBlue
         } else if waitingResult {
-            state = "wait"; text = statusLabel.text == "Pontuando…" ? "Pontuando…" : "Processando…"
-            image = "ellipsis"; color = .systemOrange
+            state = "wait"; text = "Processando…"
+            image = "ellipsis"; color = .systemGray
         } else if alive {
             state = "ready"; text = ""
-            image = "mic.fill"; color = .systemBlue
+            image = "mic.fill"; color = .systemGray
         } else {
             state = "off"; text = ""
-            image = "mic"; color = .systemGray
+            image = "mic"; color = .systemGray3
         }
         if statusLabel.text != text { statusLabel.text = text }
-        if (state == "rec" || state == "wait") && !suggestions.isEmpty { setSuggestions([]) }
+        let busy = state == "rec" || state == "online" || state == "local" || state == "wait"
+        if busy && !suggestions.isEmpty { setSuggestions([]) }
         if state == "rec" && settings.aiPunctuation { Punctuator.prewarm() }
-        guard state != lastStatusKey else { return }
+        guard state != lastStatusKey, !flashing else { return }
         lastStatusKey = state
         var cfg = micButton.configuration ?? .filled()
         cfg.image = UIImage(systemName: image)
         cfg.baseBackgroundColor = color
         micButton.configuration = cfg
+        setPulse(state == "online" || state == "local")
+    }
+
+    /// Pulso suave do botão enquanto processa
+    private func setPulse(_ on: Bool) {
+        micButton.layer.removeAnimation(forKey: "pulse")
+        micButton.alpha = 1
+        guard on else { return }
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1
+        anim.toValue = 0.45
+        anim.duration = 0.6
+        anim.autoreverses = true
+        anim.repeatCount = .infinity
+        micButton.layer.add(anim, forKey: "pulse")
+    }
+
+    /// Pisca a cor de quem fez o trabalho: 🟢 online, 🔵 IA do iPhone, ⚪ regras simples
+    private func flashResult(_ source: String) {
+        let color: UIColor
+        let icon: String
+        switch source {
+        case "online": color = .systemGreen; icon = "checkmark.icloud.fill"
+        case "ai": color = .systemBlue; icon = "checkmark"
+        default: color = .systemGray; icon = "checkmark"
+        }
+        setPulse(false)
+        flashing = true
+        var cfg = micButton.configuration ?? .filled()
+        cfg.image = UIImage(systemName: icon)
+        cfg.baseBackgroundColor = color
+        micButton.configuration = cfg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.flashing = false
+            self.lastStatusKey = ""
+            self.refreshStatus()
+        }
     }
 
     private func insertResultIfNew() {
@@ -372,34 +436,39 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         waitingResult = false
         lastStatusKey = ""
         let age = Date().timeIntervalSince1970 - d.double(forKey: K.resultTime)
-        guard age < 30, let raw = d.string(forKey: K.result), !raw.isEmpty else { refreshStatus(); return }
+        // até 10 min: dá tempo de desbloquear a tela depois de uma fala longa
+        guard age < 600, let raw = d.string(forKey: K.result), !raw.isEmpty else { refreshStatus(); return }
+        let source = d.string(forKey: K.lastSource) ?? "rules"
         if d.bool(forKey: K.needsAI) {
             // Pontua aqui no teclado (a IA não responde para apps em segundo plano)
             waitingResult = true
             waitingSince = Date()
+            keyboardAIRunning = true
             lastStatusKey = ""
             refreshStatus()
-            statusLabel.text = "Pontuando…"
             Task { [weak self] in
                 let (ai, why) = await Punctuator.punctuateWithAI(raw)
                 await MainActor.run {
                     guard let self else { return }
-                    Shared.defaults?.set(ai != nil ? why : "regras simples (\(why))", forKey: K.diagPunct)
-                    self.insertDictated(ai ?? Punctuator.heuristic(raw))
+                    let prev = Shared.defaults?.string(forKey: K.diagPunct) ?? ""
+                    let note = prev.hasPrefix("online falhou") ? " — \(prev)" : ""
+                    Shared.defaults?.set((ai != nil ? why : "regras simples (\(why))") + note, forKey: K.diagPunct)
+                    self.keyboardAIRunning = false
+                    self.insertDictated(ai ?? Punctuator.heuristic(raw), source: ai != nil ? "ai" : "rules")
                 }
             }
             return
         }
-        insertDictated(raw)
+        insertDictated(raw, source: source)
     }
 
-    private func insertDictated(_ text: String) {
+    private func insertDictated(_ text: String, source: String) {
         waitingResult = false
         lastStatusKey = ""
         textDocumentProxy.insertText(adjustForContext(text))
         clearWordState()
         autoCap()
-        refreshStatus()
+        flashResult(source)
     }
 
     /// Ajusta espaço e maiúscula de acordo com o que já está escrito antes do cursor

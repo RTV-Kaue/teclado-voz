@@ -61,6 +61,7 @@ final class DictationEngine: ObservableObject {
         observer.observe(DarwinNote.stop) { [weak self] in self?.stopDictation() }
         observer.observe(DarwinNote.cancel) { [weak self] in self?.cancelDictation() }
         observer.observe(DarwinNote.settings) { [weak self] in self?.settings = KeyboardSettings.load() }
+        observer.observe(DarwinNote.endSession) { [weak self] in self?.endSession() }
         if #available(iOS 26.0, *) {
             Task { [weak self] in
                 let ok = await ModernDictation.prepare()
@@ -116,6 +117,7 @@ final class DictationEngine: ObservableObject {
         }
         sessionActive = true
         startHeartbeat()
+        if UIApplication.shared.applicationState == .active { LiveActivityController.shared.start() }
         publish(status: "Sessão ativa")
         return true
     }
@@ -129,6 +131,7 @@ final class DictationEngine: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         sessionActive = false
         Shared.defaults?.set(0, forKey: K.heartbeat)
+        LiveActivityController.shared.end()
         publish(status: "Sessão inativa")
     }
 
@@ -330,7 +333,7 @@ final class DictationEngine: ObservableObject {
                     if let online {
                         let text = TextProcessor.process(online, settings: self.settings)
                         self.setDiag(why)
-                        self.finishDelivery(Punctuator.heuristic(text), needsAI: false)
+                        self.finishDelivery(Punctuator.heuristic(text), needsAI: false, source: "online")
                     } else if raw.trimmingCharacters(in: .whitespaces).isEmpty {
                         self.setDiag("nada reconhecido (\(why))")
                         self.publish(status: "Nada reconhecido. Sessão ativa")
@@ -358,16 +361,16 @@ final class DictationEngine: ObservableObject {
                 await MainActor.run {
                     guard let self, gen == self.generation else { return }
                     self.setDiag((ai != nil ? why : "regras simples (\(why))") + suffix)
-                    self.finishDelivery(ai ?? Punctuator.heuristic(text), needsAI: false)
+                    self.finishDelivery(ai ?? Punctuator.heuristic(text), needsAI: false, source: ai != nil ? "ai" : "rules")
                 }
             }
         } else if wantsAI {
             // App em segundo plano: o teclado (que está na tela) pontua
             if !suffix.isEmpty { Shared.defaults?.set("online falhou: \(note ?? "")", forKey: K.diagPunct) }
-            finishDelivery(text, needsAI: true)
+            finishDelivery(text, needsAI: true, source: "ai")
         } else {
             setDiag((Punctuator.hasPunctuation(text) ? "do próprio motor de voz" : "regras simples") + suffix)
-            finishDelivery(Punctuator.heuristic(text), needsAI: false)
+            finishDelivery(Punctuator.heuristic(text), needsAI: false, source: "rules")
         }
     }
 
@@ -376,13 +379,14 @@ final class DictationEngine: ObservableObject {
         Shared.defaults?.set(s, forKey: K.diagPunct)
     }
 
-    private func finishDelivery(_ text: String, needsAI: Bool) {
+    private func finishDelivery(_ text: String, needsAI: Bool, source: String) {
         lastResult = text
         partial = ""
         lastActivity = Date()
         if let d = Shared.defaults {
             d.set(text, forKey: K.result)
             d.set(needsAI, forKey: K.needsAI)
+            d.set(source, forKey: K.lastSource)
             d.set(d.integer(forKey: K.resultID) + 1, forKey: K.resultID)
             d.set(Date().timeIntervalSince1970, forKey: K.resultTime)
         }
@@ -409,11 +413,23 @@ final class DictationEngine: ObservableObject {
 
     private func publish(status s: String) {
         status = s
+        let phase: String
+        if recording {
+            phase = "gravando"
+        } else if s == "Transcrevendo online…" || (s == "Processando…" && groqTask != nil) {
+            phase = "online"
+        } else if s == "Processando…" || s == "Pontuando…" {
+            phase = "local"
+        } else {
+            phase = ""
+        }
         if let d = Shared.defaults {
             d.set(recording, forKey: K.recording)
             d.set(partial, forKey: K.partial)
             d.set(s, forKey: K.status)
+            d.set(phase, forKey: K.phase)
         }
+        if sessionActive { LiveActivityController.shared.update(phase.isEmpty ? "pronto" : phase) }
         DarwinNote.post(DarwinNote.state)
     }
 }
