@@ -55,13 +55,10 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
 
     private let topBar = UIView()
     private let statusLabel = UILabel()
-    private let suggestionStack = UIStackView()
+    private let suggestionStack = SuggestionBar()
     private let blockBar = UIStackView()
     private let blockLabel = UILabel()
     private var blockCandidate: String?
-    private var suggestionPressTimer: Timer?
-    private var suggestionPressed: Int?
-    private var suggestionButtons: [UIButton] = []
     private var suggestions: [Suggestion] = []
     private let micButton = UIButton(type: .system)
     private let dismissButton = UIButton(type: .system)
@@ -227,22 +224,9 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         statusLabel.lineBreakMode = .byTruncatingHead
         statusLabel.numberOfLines = 1
 
-        suggestionStack.axis = .horizontal
-        suggestionStack.distribution = .fillEqually
-        suggestionStack.spacing = 4
         suggestionStack.isHidden = true
-        for i in 0..<3 {
-            let b = UIButton(type: .system)
-            b.tag = i
-            b.titleLabel?.font = .systemFont(ofSize: 17)
-            b.titleLabel?.lineBreakMode = .byTruncatingTail
-            b.setTitleColor(.label, for: .normal)
-            b.layer.cornerRadius = 8
-            b.addTarget(self, action: #selector(suggestionDown(_:)), for: .touchDown)
-            b.addTarget(self, action: #selector(suggestionUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-            suggestionButtons.append(b)
-            suggestionStack.addArrangedSubview(b)
-        }
+        suggestionStack.onTap = { [weak self] i in self?.acceptSuggestion(i) }
+        suggestionStack.onLongPress = { [weak self] i in self?.showBlockMenu(i) }
 
         var cfg = UIButton.Configuration.filled()
         cfg.cornerStyle = .capsule
@@ -284,8 +268,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             statusLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             suggestionStack.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 2),
             suggestionStack.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
-            suggestionStack.topAnchor.constraint(equalTo: topBar.topAnchor, constant: 3),
-            suggestionStack.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -3),
+            suggestionStack.topAnchor.constraint(equalTo: topBar.topAnchor, constant: 2),
+            suggestionStack.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -2),
             blockBar.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 6),
             blockBar.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
             blockBar.topAnchor.constraint(equalTo: topBar.topAnchor),
@@ -524,17 +508,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         let show = !suggestions.isEmpty
         suggestionStack.isHidden = !show
         statusLabel.isHidden = show
-        for (i, b) in suggestionButtons.enumerated() {
-            if i < suggestions.count {
-                let s = suggestions[i]
-                b.isHidden = false
-                b.setTitle(s.title, for: .normal)
-                b.titleLabel?.font = s.highlight ? .boldSystemFont(ofSize: 17) : .systemFont(ofSize: 17)
-                b.backgroundColor = s.highlight ? KeyView.normalColor.withAlphaComponent(0.6) : .clear
-            } else {
-                b.isHidden = true
-            }
-        }
+        suggestionStack.set(suggestions.map { (title: $0.title, highlight: $0.highlight) })
     }
 
     private func updateSuggestions() {
@@ -576,6 +550,11 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
                                         word: c, recordPrev: prev))
             }
         }
+        // Palavra que o teclado não conhece: oferece adicionar ao dicionário
+        if items.isEmpty, w.count >= 2, !isProtected(w), engine.frequency(w) == 0 {
+            items.append(Suggestion(title: "\(w) ＋", insert: w + " ", deleteCount: w.count, learn: w, highlight: false,
+                                    word: nil, recordPrev: prev))
+        }
         for c in engine.completions(prefix: w, limit: 5) {
             let cc = matchCase(c, like: w)
             if cc != w && !items.contains(where: { $0.title == cc }) && items.count < 3 {
@@ -584,25 +563,6 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             }
         }
         setSuggestions(items)
-    }
-
-    @objc private func suggestionDown(_ sender: UIButton) {
-        guard sender.tag < suggestions.count else { return }
-        suggestionPressed = sender.tag
-        sender.backgroundColor = KeyView.pressedColor
-        suggestionPressTimer?.invalidate()
-        suggestionPressTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: false) { [weak self] _ in
-            guard let self, let i = self.suggestionPressed else { return }
-            self.suggestionPressed = nil
-            self.showBlockMenu(i)
-        }
-    }
-
-    @objc private func suggestionUp(_ sender: UIButton) {
-        suggestionPressTimer?.invalidate()
-        guard suggestionPressed == sender.tag else { return }
-        suggestionPressed = nil
-        acceptSuggestion(sender.tag)
     }
 
     private func showBlockMenu(_ i: Int) {

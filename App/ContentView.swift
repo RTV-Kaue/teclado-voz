@@ -226,9 +226,22 @@ struct ReplacementsView: View {
 struct MyWordsView: View {
     @State private var learned: [String] = Shared.defaults?.stringArray(forKey: K.learned) ?? []
     @State private var blocked: [String] = Shared.defaults?.stringArray(forKey: K.blocked) ?? []
+    @State private var newWord = ""
 
     var body: some View {
         List {
+            Section {
+                HStack {
+                    TextField("Adicionar palavra", text: $newWord)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit(add)
+                    Button("Adicionar", action: add)
+                        .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } footer: {
+                Text("Nomes de equipamentos, clientes, termos técnicos… O teclado passa a sugerir e não corrige mais.")
+            }
             Section {
                 if learned.isEmpty { Text("Nenhuma ainda").foregroundStyle(.secondary) }
                 ForEach(learned, id: \.self) { Text($0) }
@@ -258,6 +271,15 @@ struct MyWordsView: View {
         }
         .navigationTitle("Minhas palavras")
         .toolbar { EditButton() }
+    }
+
+    private func add() {
+        let w = newWord.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !w.isEmpty else { return }
+        if !learned.contains(w) { learned.insert(w, at: 0) }
+        blocked.removeAll { $0 == w }
+        newWord = ""
+        save()
     }
 
     private func save() {
