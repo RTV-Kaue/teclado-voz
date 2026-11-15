@@ -24,45 +24,30 @@ jobs:
       - name: Instalar ferramentas
         run: brew install xcodegen ldid
 
-      - name: Baixar dicionário de português
+      - name: Dicionário e previsão de palavras
         run: |
           set -e
-          for U in \
-            https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/pt_br/pt_br_50k.txt \
-            https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2016/pt_br/pt_br_50k.txt; do
-            if curl -fsSL "$U" -o Keyboard/palavras.txt; then break; fi
+          mkdir -p /tmp/dados
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/wooorm/dictionaries /tmp/dados/wd
+          (cd /tmp/dados/wd && git sparse-checkout set dictionaries/pt)
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/hermitdave/FrequencyWords /tmp/dados/fw
+          (cd /tmp/dados/fw && git sparse-checkout set content/2018/pt_br)
+          python3 tools/build_words.py /tmp/dados/fw/content/2018/pt_br/pt_br_full.txt \
+            /tmp/dados/wd/dictionaries/pt/index.aff /tmp/dados/wd/dictionaries/pt/index.dic Keyboard/palavras.txt 90000
+          SRC=""
+          if curl -fsSL https://downloads.tatoeba.org/exports/per_language/por/por_sentences.tsv.bz2 -o /tmp/dados/por.tsv.bz2; then
+            SRC="$SRC /tmp/dados/por.tsv.bz2"
+          fi
+          for C in por-br_web_2015_1M por-br_newscrawl_2011_1M por_news_2020_1M por_news_2013_1M por_wikipedia_2021_1M; do
+            if curl -fsSL --max-time 300 "https://downloads.wortschatz-leipzig.de/corpora/$C.tar.gz" -o /tmp/dados/c.tar.gz; then
+              mkdir -p /tmp/dados/c && tar -xzf /tmp/dados/c.tar.gz -C /tmp/dados/c
+              F=$(find /tmp/dados/c -name "*-sentences.txt" | head -1)
+              if [ -n "$F" ]; then SRC="$SRC $F"; echo "corpus: $C"; break; fi
+            fi
           done
-          test -s Keyboard/palavras.txt
-          wc -l Keyboard/palavras.txt
-          head -5 Keyboard/palavras.txt
-
-      - name: Gerar previsão de palavras (frases do Tatoeba)
-        continue-on-error: true
-        run: |
-          curl -fsSL https://downloads.tatoeba.org/exports/per_language/por/por_sentences.tsv.bz2 -o /tmp/por.tsv.bz2
-          python3 - <<'PY'
-          import bz2, re, collections
-          pairs = collections.defaultdict(collections.Counter)
-          word = re.compile(r"[a-záàâãéêíóôõúüç]+(?:-[a-záàâãéêíóôõúüç]+)*")
-          with bz2.open('/tmp/por.tsv.bz2', 'rt', encoding='utf-8') as f:
-              for line in f:
-                  parts = line.rstrip('\n').split('\t')
-                  if len(parts) < 3: continue
-                  for sent in re.split(r'[.!?]+', parts[2].lower()):
-                      toks = word.findall(sent)
-                      prev = '^'
-                      for t in toks:
-                          pairs[prev][t] += 1
-                          prev = t
-          with open('Keyboard/bigramas.txt', 'w', encoding='utf-8') as out:
-              n = 0
-              for w, c in pairs.items():
-                  top = [x for x, k in c.most_common(5) if k >= 2]
-                  if top:
-                      out.write(w + '\t' + ' '.join(top) + '\n'); n += 1
-          print('bigramas:', n)
-          PY
-          wc -l Keyboard/bigramas.txt
+          python3 tools/build_bigrams.py Keyboard/palavras.txt Keyboard/bigramas.txt $SRC
+          wc -l Keyboard/palavras.txt Keyboard/bigramas.txt
+          head -3 Keyboard/bigramas.txt
 
       - name: Gerar projeto
         run: xcodegen generate

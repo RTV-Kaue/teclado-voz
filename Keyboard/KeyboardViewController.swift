@@ -527,7 +527,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         if w.isEmpty {
             // Previsão da próxima palavra
             guard let prev = previousWord(droppingCurrent: "") else { setSuggestions([]); return }
-            let items = engine.predictions(after: prev, limit: 3).map { p -> Suggestion in
+            let items = engine.predictions(after: prev, limit: 3).map { p0 -> Suggestion in
+                let p = engine.displayForm(p0)
                 let t = shift == .on ? p.prefix(1).uppercased() + p.dropFirst() : (shift == .locked ? p.uppercased() : p)
                 return Suggestion(title: t, insert: t + " ", deleteCount: 0, learn: nil, highlight: false,
                                   word: p, recordPrev: prev)
@@ -541,8 +542,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         }
         let prev = previousWord(droppingCurrent: w)
         var items: [Suggestion] = []
-        if settings.autocorrect, !isProtected(w), let c = engine.correction(for: w) {
-            let fixed = matchCase(c, like: w)
+        if settings.autocorrect, !isProtected(w), let c = engine.correction(for: w, prev: prev) {
+            let fixed = matchCase(engine.displayForm(c), like: w)
             if fixed != w {
                 items.append(Suggestion(title: "“\(w)”", insert: w + " ", deleteCount: w.count, learn: w, highlight: false,
                                         word: nil, recordPrev: prev))
@@ -556,8 +557,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             items.append(Suggestion(title: unknown ? "\(w) ＋" : w, insert: w + " ", deleteCount: w.count,
                                     learn: unknown ? w : nil, highlight: false, word: nil, recordPrev: prev))
         }
-        for c in engine.completions(prefix: w, limit: 5) {
-            let cc = matchCase(c, like: w)
+        for c in engine.completions(prefix: w, prev: prev, limit: 5) {
+            let cc = matchCase(engine.displayForm(c), like: w)
             if cc != w && !items.contains(where: { $0.title == cc }) && items.count < 3 {
                 items.append(Suggestion(title: cc, insert: cc + " ", deleteCount: w.count, learn: nil, highlight: false,
                                         word: c, recordPrev: prev))
@@ -682,8 +683,8 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         guard settings.autocorrect, engine.loaded else { return nil }
         let w = currentWord()
         guard w.count >= 2, w.allSatisfy({ $0.isLetter }), !isProtected(w),
-              let c = engine.correction(for: w) else { return nil }
-        let fixed = matchCase(c, like: w)
+              let c = engine.correction(for: w, prev: previousWord(droppingCurrent: w)) else { return nil }
+        let fixed = matchCase(engine.displayForm(c), like: w)
         guard fixed != w else { return nil }
         for _ in 0..<w.count { textDocumentProxy.deleteBackward() }
         textDocumentProxy.insertText(fixed)
@@ -1132,25 +1133,40 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             commit(a)
             return
         }
-        let corners = detectCorners(a.points, seqIdx: a.seqIdx)
-        let cands = engine.swipeCandidates(path: a.seq, corners: corners, neighbors: neighborMap(), limit: 4)
+        // espaço antes da palavra, se precisar (e daí a palavra anterior serve de contexto)
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        var addedSpace = false
+        if let last = before.last, !last.isWhitespace, !"([{\"'“/".contains(last) {
+            textDocumentProxy.insertText(" ")
+            addedSpace = true
+        }
+        let prev = previousWord(droppingCurrent: "")
+
+        var centers: [Character: CGPoint] = [:]
+        for k in letterKeys {
+            if case .char(let s) = k.kind, let ch = s.first {
+                let f = k.convert(k.bounds, to: container)
+                centers[ch] = CGPoint(x: f.midX, y: f.midY)
+            }
+        }
+        var keyWidth = letterKeys.first?.bounds.width ?? 30
+        if let q = centers["q"], let w = centers["w"] { keyWidth = w.x - q.x }
+
+        let cands = engine.swipeDecode(points: a.points, centers: centers, keyWidth: keyWidth, prev: prev, limit: 4)
         guard let best = cands.first else {
+            if addedSpace { textDocumentProxy.deleteBackward() }
             if settings.haptics && hasFullAccess { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
             return
         }
-        var word = best
-        var alts = Array(cands.dropFirst())
+        var word = engine.displayForm(best)
+        var alts = cands.dropFirst().map { engine.displayForm($0) }
         if shift == .locked {
             word = word.uppercased(); alts = alts.map { $0.uppercased() }
         } else if shift == .on {
             word = word.prefix(1).uppercased() + word.dropFirst()
             alts = alts.map { $0.prefix(1).uppercased() + $0.dropFirst() }
         }
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-        if let last = before.last, !last.isWhitespace, !"([{\"'“/".contains(last) {
-            textDocumentProxy.insertText(" ")
-        }
-        if let prev = previousWord(droppingCurrent: "") { engine.recordPair(prev: prev, word: best) }
+        if let prev { engine.recordPair(prev: prev, word: best) }
         textDocumentProxy.insertText(word + " ")
         lastCorrection = nil
         lastSwipe = (word, alts)
@@ -1160,44 +1176,6 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             updateShiftUI()
         }
         updateSuggestions()
-    }
-
-    private func detectCorners(_ pts: [CGPoint], seqIdx: [Int]) -> Set<Int> {
-        var out = Set<Int>()
-        let k = 4
-        guard pts.count > 2 * k, seqIdx.count == pts.count else { return out }
-        for i in k..<(pts.count - k) {
-            let a = pts[i - k], b = pts[i], c = pts[i + k]
-            let v1x = b.x - a.x, v1y = b.y - a.y
-            let v2x = c.x - b.x, v2y = c.y - b.y
-            let l1 = hypot(v1x, v1y), l2 = hypot(v2x, v2y)
-            guard l1 > 8, l2 > 8 else { continue }
-            let cosine = (v1x * v2x + v1y * v2y) / (l1 * l2)
-            if cosine < 0.3 { out.insert(seqIdx[i]) }
-        }
-        return out
-    }
-
-    private func neighborMap() -> [Character: [Character]] {
-        var centers: [(Character, CGPoint)] = []
-        for k in letterKeys {
-            if case .char(let s) = k.kind, let ch = s.first {
-                let f = k.convert(k.bounds, to: container)
-                centers.append((ch, CGPoint(x: f.midX, y: f.midY)))
-            }
-        }
-        let gap = CGFloat(settings.keySpacing)
-        let w = (letterKeys.first?.bounds.width ?? 30) + gap
-        let h = (letterKeys.first?.bounds.height ?? 50) + gap * 1.6
-        var map: [Character: [Character]] = [:]
-        for (c, p) in centers {
-            map[c] = centers.filter { other in
-                guard other.0 != c else { return false }
-                let dx = (other.1.x - p.x) / w, dy = (other.1.y - p.y) / h
-                return dx * dx + dy * dy < 1.5 * 1.5
-            }.map { $0.0 }
-        }
-        return map
     }
 
     private func drawTrail(_ pts: [CGPoint]) {
