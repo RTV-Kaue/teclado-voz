@@ -11,6 +11,8 @@ vocab = set()
 for line in open(vocab_path, encoding='utf-8'):
     p = line.split()
     if p: vocab.add(p[0].lower())
+# o Tatoeba usa "Tom" e "Mary" em milhares de frases de exemplo; não queremos prever esses nomes
+vocab -= {'tom', 'mary', 'john', 'ken'}
 
 word = re.compile(r"[a-záàâãéêíóôõúüç]+(?:-[a-záàâãéêíóôõúüç]+)*")
 pairs = collections.defaultdict(collections.Counter)
