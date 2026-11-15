@@ -62,6 +62,8 @@ final class DictationEngine: ObservableObject {
         observer.observe(DarwinNote.cancel) { [weak self] in self?.cancelDictation() }
         observer.observe(DarwinNote.settings) { [weak self] in self?.settings = KeyboardSettings.load() }
         observer.observe(DarwinNote.endSession) { [weak self] in self?.endSession() }
+        IntentBridge.endSession = { DictationEngine.shared.endSession() }
+        IntentBridge.stop = { DictationEngine.shared.stopDictation() }
         if #available(iOS 26.0, *) {
             Task { [weak self] in
                 let ok = await ModernDictation.prepare()

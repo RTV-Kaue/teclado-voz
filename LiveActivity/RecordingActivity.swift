@@ -11,6 +11,13 @@ struct RecordingAttributes: ActivityAttributes {
     }
 }
 
+/// O app registra aqui o que fazer quando os botões são tocados
+/// (o iOS executa o botão dentro do processo do app).
+enum IntentBridge {
+    static var stop: (() -> Void)?
+    static var endSession: (() -> Void)?
+}
+
 private func postDarwin(_ name: String) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          CFNotificationName(name as CFString), nil, nil, true)
@@ -20,7 +27,11 @@ private func postDarwin(_ name: String) {
 struct StopRecordingIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Parar gravação"
     func perform() async throws -> some IntentResult {
-        postDarwin("com.kaue.tecladovoz.stop")
+        if let h = IntentBridge.stop {
+            await MainActor.run { h() }
+        } else {
+            postDarwin("com.kaue.tecladovoz.stop")
+        }
         return .result()
     }
 }
@@ -29,7 +40,15 @@ struct StopRecordingIntent: LiveActivityIntent {
 struct EndSessionIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Encerrar sessão"
     func perform() async throws -> some IntentResult {
-        postDarwin("com.kaue.tecladovoz.endsession")
+        if let h = IntentBridge.endSession {
+            await MainActor.run { h() }
+        } else {
+            postDarwin("com.kaue.tecladovoz.endsession")
+        }
+        // garante que o quadro some mesmo se algo falhar acima
+        for a in Activity<RecordingAttributes>.activities {
+            await a.end(nil, dismissalPolicy: .immediate)
+        }
         return .result()
     }
 }
