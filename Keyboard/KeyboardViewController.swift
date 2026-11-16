@@ -89,6 +89,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     private var lastCorrection: (original: String, corrected: String, sep: String)?
     private var lastSwipe: (word: String, alternates: [String])?
     private var pendingSwipeSpace = false
+    private var rejectedSwipe: String?     // palavra deslizada que você apagou (para aprender a certa)
     private var isVisible = false
     private var keyboardAIRunning = false
     private var flashing = false
@@ -603,6 +604,13 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         guard index < suggestions.count else { return }
         let s = suggestions[index]
         if settings.haptics && hasFullAccess { haptic.impactOccurred() }
+        if pendingSwipeSpace, let sw = lastSwipe {
+            engine.swipeFeedback(rejected: sw.word, wanted: s.insert.trimmingCharacters(in: .whitespaces))
+            rejectedSwipe = nil
+        } else if let r = rejectedSwipe {
+            engine.swipeFeedback(rejected: r, wanted: s.insert.trimmingCharacters(in: .whitespaces))
+            rejectedSwipe = nil
+        }
         for _ in 0..<s.deleteCount { textDocumentProxy.deleteBackward() }
         textDocumentProxy.insertText(s.insert)
         if let l = s.learn { learnWord(l) }
@@ -662,6 +670,10 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
     /// Aprende a sequência "palavra anterior → palavra digitada" (antes do espaço/pontuação)
     private func recordTypedWord() {
         let w = currentWord()
+        if let r = rejectedSwipe, !w.isEmpty {
+            if w.lowercased() != r.lowercased() { engine.swipeFeedback(rejected: r, wanted: w) }
+            rejectedSwipe = nil
+        }
         guard w.count >= 1, w.allSatisfy({ $0.isLetter }), let prev = previousWord(droppingCurrent: w) else { return }
         engine.recordPair(prev: prev, word: w)
     }
@@ -709,6 +721,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         let before = textDocumentProxy.documentContextBeforeInput ?? ""
         guard before.hasSuffix(s.word + " ") else { clearWordState(); return false }
         for _ in 0..<(s.word.count + 1) { textDocumentProxy.deleteBackward() }
+        rejectedSwipe = s.word
         clearWordState()
         return true
     }
@@ -1172,6 +1185,10 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             alts = alts.map { $0.prefix(1).uppercased() + $0.dropFirst() }
         }
         if let prev { engine.recordPair(prev: prev, word: best) }
+        if let r = rejectedSwipe {
+            if best != r.lowercased() { engine.swipeFeedback(rejected: r, wanted: best) }
+            rejectedSwipe = nil
+        }
         textDocumentProxy.insertText(word + " ")
         lastCorrection = nil
         lastSwipe = (word, alts)

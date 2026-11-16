@@ -128,6 +128,8 @@ final class WordEngine {
                 self.boost = boostValue
                 self.userBigrams = (Shared.defaults?.dictionary(forKey: "user.bigrams") as? [String: [String: Int]]) ?? [:]
                 self.userUnigrams = (Shared.defaults?.dictionary(forKey: "user.unigrams") as? [String: Int]) ?? [:]
+                self.swipeWanted = (Shared.defaults?.dictionary(forKey: "swipe.wanted") as? [String: Int]) ?? [:]
+                self.swipeRejected = (Shared.defaults?.dictionary(forKey: "swipe.rejected") as? [String: Int]) ?? [:]
                 self.loaded = true
                 self.loading = false
                 self.applyLists(extra: extra, learned: learned, blocked: blockedList)
@@ -350,13 +352,43 @@ final class WordEngine {
     func forgetUserBigrams() {
         userBigrams = [:]
         userUnigrams = [:]
+        swipeWanted = [:]
+        swipeRejected = [:]
         userChanges = 0
     }
 
     // MARK: Digitação deslizando (comparando o desenho do caminho)
 
     private static let samples = 24
-    private static let sigma = 0.3        // tolerância, em larguras de tecla
+    private static let sigmaLocation = 0.45   // tolerância de posição, em larguras de tecla
+    private static let sigmaShape = 0.06      // tolerância do formato do desenho
+    private static let sigmaEnds = 0.5        // tolerância do começo e do fim
+
+    // Aprendizado do deslizar: palavras que você aceitou/corrigiu e as que rejeitou
+    private var swipeWanted: [String: Int] = [:]
+    private var swipeRejected: [String: Int] = [:]
+
+    func swipeFeedback(rejected: String?, wanted: String?) {
+        if let r = rejected?.lowercased(), !r.isEmpty { swipeRejected[r, default: 0] += 1 }
+        if let w = wanted?.lowercased(), !w.isEmpty { swipeWanted[w, default: 0] += 1 }
+        Shared.defaults?.set(swipeWanted, forKey: "swipe.wanted")
+        Shared.defaults?.set(swipeRejected, forKey: "swipe.rejected")
+    }
+
+    /// Formato do desenho, sem depender de posição e tamanho
+    private static func shape(_ pts: [SIMD2<Double>]) -> [SIMD2<Double>] {
+        guard !pts.isEmpty else { return pts }
+        var c = SIMD2<Double>(0, 0)
+        var minP = pts[0], maxP = pts[0]
+        for p in pts {
+            c += p
+            minP = SIMD2(min(minP.x, p.x), min(minP.y, p.y))
+            maxP = SIMD2(max(maxP.x, p.x), max(maxP.y, p.y))
+        }
+        c /= Double(pts.count)
+        let size = max(maxP.x - minP.x, maxP.y - minP.y, 1e-6)
+        return pts.map { ($0 - c) / size }
+    }
 
     /// points: caminho do dedo; centers: centro de cada tecla de letra; keyWidth: largura de uma tecla
     func swipeDecode(points: [CGPoint], centers: [Character: CGPoint], keyWidth: CGFloat,
@@ -368,12 +400,13 @@ final class WordEngine {
         let user = points.map(norm)
         let userLen = WordEngine.length(user)
         let userR = WordEngine.resample(user, WordEngine.samples)
+        let userShape = WordEngine.shape(userR)
         var c: [Character: SIMD2<Double>] = [:]
         for (ch, p) in centers { c[ch] = norm(p) }
 
         let s = norm(start), e = norm(end)
-        let firsts = c.filter { WordEngine.simdDist($0.value, s) < 1.3 }.map { $0.key }
-        let lasts = c.filter { WordEngine.simdDist($0.value, e) < 1.3 }.map { $0.key }
+        let firsts = c.filter { WordEngine.simdDist($0.value, s) < 1.5 }.map { $0.key }
+        let lasts = c.filter { WordEngine.simdDist($0.value, e) < 1.5 }.map { $0.key }
 
         var scored: [(String, Double)] = []
         for f in firsts {
@@ -391,16 +424,26 @@ final class WordEngine {
                     // o dedo andou: não é palavra de uma letra só
                     if ideal.count == 1 && userLen > 0.7 { continue }
                     let idealLen = WordEngine.length(ideal)
-                    if idealLen > 1.5 * userLen + 1.5 || idealLen < 0.6 * userLen - 1.5 { continue }
+                    if idealLen > 1.6 * userLen + 1.5 || idealLen < 0.5 * userLen - 1.5 { continue }
                     let idealR = WordEngine.resample(ideal, WordEngine.samples)
                     var d = 0.0
                     for i in 0..<WordEngine.samples { d += WordEngine.simdDist(userR[i], idealR[i]) }
                     d /= Double(WordEngine.samples)
-                    let geo = -(d * d) / (2 * WordEngine.sigma * WordEngine.sigma)
+                    var dShape = 0.0
+                    if ideal.count > 1 {
+                        let idealShape = WordEngine.shape(idealR)
+                        for i in 0..<WordEngine.samples { dShape += WordEngine.simdDist(userShape[i], idealShape[i]) }
+                        dShape /= Double(WordEngine.samples)
+                    }
+                    let sl = WordEngine.sigmaLocation, ss = WordEngine.sigmaShape
+                    let geo = -(d * d) / (2 * sl * sl) - (dShape * dShape) / (2 * ss * ss)
                     // começo e fim do traçado pesam mais (importante em palavras curtas como "oi")
                     let ds = WordEngine.simdDist(s, ideal[0]), de = WordEngine.simdDist(e, ideal[ideal.count - 1])
-                    let ends = -(ds * ds + de * de) / (2 * 0.35 * 0.35)
-                    let total = geo + ends + 0.35 * baseScore(entry.word) + 0.6 * contextScore(entry.word, prev: prev)
+                    let se = WordEngine.sigmaEnds
+                    let ends = -(ds * ds + de * de) / (2 * se * se)
+                    var total = geo + ends + 0.45 * baseScore(entry.word) + 0.6 * contextScore(entry.word, prev: prev)
+                    if let wnt = swipeWanted[entry.word] { total += 1.2 * log(1 + Double(wnt)) }
+                    if let rej = swipeRejected[entry.word] { total -= 1.0 * log(1 + Double(rej)) }
                     scored.append((entry.word, total))
                 }
             }
