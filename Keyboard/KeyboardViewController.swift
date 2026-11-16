@@ -962,7 +962,7 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
         // Começo do deslizar: saiu da tecla de letra arrastando
         if !a.swiping, !a.committed, settings.swipeTyping, currentLayer == .letters,
            case .char(let s) = a.key.kind, let ch = s.first, ch.isLetter,
-           hypot(p.x - a.start.x, p.y - a.start.y) > max(a.key.bounds.width * 0.75, 18) {
+           hypot(p.x - a.start.x, p.y - a.start.y) > max(a.key.bounds.width * 0.5, 14) {
             a.swiping = true
             a.longTimer?.invalidate()
             a.longTimer = nil
@@ -970,6 +970,11 @@ final class KeyboardViewController: UIInputViewController, KeysContainerDelegate
             a.points = [a.start]
             a.seq = [ch]
             a.seqIdx = [0]
+        }
+        // dedo já se mexendo: não abrir o menu de acentos (era o que atrapalhava "oi")
+        if !a.swiping, a.longTimer != nil, hypot(p.x - a.start.x, p.y - a.start.y) > max(a.key.bounds.width * 0.3, 8) {
+            a.longTimer?.invalidate()
+            a.longTimer = nil
         }
         if a.swiping {
             a.points.append(p)

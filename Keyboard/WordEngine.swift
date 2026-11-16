@@ -388,6 +388,8 @@ final class WordEngine {
                         ideal.append(p)
                     }
                     guard ok, !ideal.isEmpty else { continue }
+                    // o dedo andou: não é palavra de uma letra só
+                    if ideal.count == 1 && userLen > 0.7 { continue }
                     let idealLen = WordEngine.length(ideal)
                     if idealLen > 1.5 * userLen + 1.5 || idealLen < 0.6 * userLen - 1.5 { continue }
                     let idealR = WordEngine.resample(ideal, WordEngine.samples)
@@ -395,7 +397,10 @@ final class WordEngine {
                     for i in 0..<WordEngine.samples { d += WordEngine.simdDist(userR[i], idealR[i]) }
                     d /= Double(WordEngine.samples)
                     let geo = -(d * d) / (2 * WordEngine.sigma * WordEngine.sigma)
-                    let total = geo + 0.35 * baseScore(entry.word) + 0.6 * contextScore(entry.word, prev: prev)
+                    // começo e fim do traçado pesam mais (importante em palavras curtas como "oi")
+                    let ds = WordEngine.simdDist(s, ideal[0]), de = WordEngine.simdDist(e, ideal[ideal.count - 1])
+                    let ends = -(ds * ds + de * de) / (2 * 0.35 * 0.35)
+                    let total = geo + ends + 0.35 * baseScore(entry.word) + 0.6 * contextScore(entry.word, prev: prev)
                     scored.append((entry.word, total))
                 }
             }
