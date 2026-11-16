@@ -328,6 +328,8 @@ final class WordEngine {
     func recordPair(prev: String, word: String) {
         let p = prev.lowercased(), w = word.lowercased()
         guard !w.isEmpty, w.allSatisfy({ $0.isLetter || $0 == "-" }), !blocked.contains(w) else { return }
+        // só aprende palavras que existem no dicionário (ou que você adicionou): erro de digitação não entra
+        guard freq[w] != nil else { return }
         userBigrams[p, default: [:]][w, default: 0] += 1
         userUnigrams[w, default: 0] += 1
         userChanges += 1
@@ -370,7 +372,10 @@ final class WordEngine {
 
     func swipeFeedback(rejected: String?, wanted: String?) {
         if let r = rejected?.lowercased(), !r.isEmpty { swipeRejected[r, default: 0] += 1 }
-        if let w = wanted?.lowercased(), !w.isEmpty { swipeWanted[w, default: 0] += 1 }
+        // a palavra "certa" só conta se existir no dicionário (evita aprender erro de digitação)
+        if let w = wanted?.lowercased(), !w.isEmpty, freq[w] != nil, !blocked.contains(w) {
+            swipeWanted[w, default: 0] += 1
+        }
         Shared.defaults?.set(swipeWanted, forKey: "swipe.wanted")
         Shared.defaults?.set(swipeRejected, forKey: "swipe.rejected")
     }
